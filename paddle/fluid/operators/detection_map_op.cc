@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #include "paddle/fluid/operators/detection_map_op.h"
+#include <string>
 
 namespace paddle {
 namespace operators {
@@ -188,8 +189,8 @@ The general steps are as follows. First, calculate the true positive and
 }  // namespace paddle
 
 namespace ops = paddle::operators;
-REGISTER_OP_WITHOUT_GRADIENT(detection_map, ops::DetectionMAPOp,
-                             ops::DetectionMAPOpMaker);
+REGISTER_OPERATOR(detection_map, ops::DetectionMAPOp, ops::DetectionMAPOpMaker,
+                  paddle::framework::EmptyGradOpMaker);
 REGISTER_OP_CPU_KERNEL(
     detection_map, ops::DetectionMAPOpKernel<paddle::platform::CPUPlace, float>,
     ops::DetectionMAPOpKernel<paddle::platform::CPUPlace, double>);

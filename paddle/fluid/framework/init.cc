@@ -26,6 +26,7 @@ namespace paddle {
 namespace framework {
 
 std::once_flag gflags_init_flag;
+std::once_flag p2p_init_flag;
 
 void InitGflags(std::vector<std::string> &argv) {
   std::call_once(gflags_init_flag, [&]() {
@@ -42,7 +43,28 @@ void InitGflags(std::vector<std::string> &argv) {
   });
 }
 
-void InitDevices() {
+void InitP2P(int count) {
+#ifdef PADDLE_WITH_CUDA
+  std::call_once(p2p_init_flag, [&]() {
+    for (int i = 0; i < count; ++i) {
+      for (int j = 0; j < count; ++j) {
+        if (i == j) continue;
+        int can_acess = -1;
+        PADDLE_ENFORCE(cudaDeviceCanAccessPeer(&can_acess, i, j),
+                       "Failed to test P2P access.");
+        if (can_acess != 1) {
+          LOG(WARNING) << "Cannot enable P2P access from " << i << " to " << j;
+        } else {
+          cudaSetDevice(i);
+          cudaDeviceEnablePeerAccess(j, 0);
+        }
+      }
+    }
+  });
+#endif
+}
+
+void InitDevices(bool init_p2p) {
   /*Init all avaiable devices by default */
 
   std::vector<platform::Place> places;
@@ -63,7 +85,9 @@ void InitDevices() {
   for (int i = 0; i < count; ++i) {
     places.emplace_back(platform::CUDAPlace(i));
   }
-
+  if (init_p2p) {
+    InitP2P(count);
+  }
   platform::DeviceContextPool::Init(places);
 }
 

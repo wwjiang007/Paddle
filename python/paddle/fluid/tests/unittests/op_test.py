@@ -334,7 +334,7 @@ class OpTest(unittest.TestCase):
                     np.allclose(
                         actual_t, expect_t, atol=atol),
                     "Output (" + out_name + ") has diff at " + str(place) +
-                    str(actual_t) + str(expect_t))
+                    str(actual_t) + "\n" + str(expect_t))
                 if isinstance(expect, tuple):
                     self.assertListEqual(actual.lod(), expect[1],
                                          "Output (" + out_name +
@@ -483,9 +483,9 @@ class OpTest(unittest.TestCase):
             input: input numpy array
 
         Returns:
-            input: if the dtype of input is np.float16, its dtype will be
-                changed to np.uint16 so that the internal memory will be 
-                reinterpreted input as of dtype np.uint16. 
+            input: The dtype of input will be changed to np.uint16 if 
+                it is originally np.float16, such that the internal memory
+                of input will be reinterpreted as of dtype np.uint16. 
         """
         if input.dtype == np.float16:
             input.dtype = np.uint16
@@ -568,6 +568,6 @@ class OpTest(unittest.TestCase):
 
         fetch_list = [g for p, g in param_grad_list]
         executor = Executor(place)
-        return map(
-            np.array,
-            executor.run(prog, feed_dict, fetch_list, return_numpy=False))
+        return map(np.array,
+                   executor.run(prog, feed_dict, fetch_list,
+                                return_numpy=False))
