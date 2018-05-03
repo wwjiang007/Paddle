@@ -133,12 +133,12 @@ void TestInference(const std::string& dirname,
       std::string prog_filename = "__model_combined__";
       std::string param_filename = "__params_combined__";
       inference_program = paddle::inference::Load(
-          executor, *scope, dirname + "/" + prog_filename,
+          &executor, scope, dirname + "/" + prog_filename,
           dirname + "/" + param_filename);
     } else {
       // Parameters are saved in separate files sited in the specified
       // `dirname`.
-      inference_program = paddle::inference::Load(executor, *scope, dirname);
+      inference_program = paddle::inference::Load(&executor, scope, dirname);
     }
   }
   // Disable the profiler and print the timing information
@@ -178,10 +178,10 @@ void TestInference(const std::string& dirname,
     std::unique_ptr<paddle::framework::ExecutorPrepareContext> ctx;
     if (PrepareContext) {
       ctx = executor.Prepare(*inference_program, 0);
-      executor.RunPreparedContext(ctx.get(), scope, feed_targets, fetch_targets,
-                                  CreateVars);
+      executor.RunPreparedContext(ctx.get(), scope, &feed_targets,
+                                  &fetch_targets, CreateVars);
     } else {
-      executor.Run(*inference_program, scope, feed_targets, fetch_targets,
+      executor.Run(*inference_program, scope, &feed_targets, &fetch_targets,
                    CreateVars);
     }
 
@@ -197,10 +197,10 @@ void TestInference(const std::string& dirname,
       if (PrepareContext) {
         // Note: if you change the inference_program, you need to call
         // executor.Prepare() again to get a new ExecutorPrepareContext.
-        executor.RunPreparedContext(ctx.get(), scope, feed_targets,
-                                    fetch_targets, CreateVars);
+        executor.RunPreparedContext(ctx.get(), scope, &feed_targets,
+                                    &fetch_targets, CreateVars);
       } else {
-        executor.Run(*inference_program, scope, feed_targets, fetch_targets,
+        executor.Run(*inference_program, scope, &feed_targets, &fetch_targets,
                      CreateVars);
       }
     }

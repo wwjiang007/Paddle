@@ -160,10 +160,13 @@ class SoftmaxOpGrad : public framework::OperatorWithKernel {
 
 namespace ops = paddle::operators;
 
-REGISTER_OP(softmax, ops::SoftmaxOp, ops::SoftmaxOpMaker, softmax_grad,
-            ops::SoftmaxOpGrad);
+REGISTER_OPERATOR(softmax, ops::SoftmaxOp, ops::SoftmaxOpMaker,
+                  paddle::framework::DefaultGradOpDescMaker<true>);
+REGISTER_OPERATOR(softmax_grad, ops::SoftmaxOpGrad);
 REGISTER_OP_CPU_KERNEL(
-    softmax, ops::SoftmaxKernel<paddle::platform::CPUDeviceContext, float>);
+    softmax, ops::SoftmaxKernel<paddle::platform::CPUDeviceContext, float>,
+    ops::SoftmaxKernel<paddle::platform::CPUDeviceContext, double>);
 REGISTER_OP_CPU_KERNEL(
     softmax_grad,
-    ops::SoftmaxGradKernel<paddle::platform::CPUDeviceContext, float>);
+    ops::SoftmaxGradKernel<paddle::platform::CPUDeviceContext, float>,
+    ops::SoftmaxGradKernel<paddle::platform::CPUDeviceContext, double>);
