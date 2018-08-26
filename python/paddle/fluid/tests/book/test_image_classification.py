@@ -62,7 +62,7 @@ def resnet_cifar10(input, depth=32):
         return tmp
 
     assert (depth - 2) % 6 == 0
-    n = (depth - 2) / 6
+    n = (depth - 2) // 6
     conv1 = conv_bn_layer(
         input=input, ch_out=16, filter_size=3, stride=1, padding=1)
     res1 = layer_warp(basicblock, conv1, 16, 16, n, 1)
@@ -121,11 +121,11 @@ def train(net_type, use_cuda, save_dirname, is_local):
     avg_cost = fluid.layers.mean(cost)
     acc = fluid.layers.accuracy(input=predict, label=label)
 
-    # Test program 
+    # Test program
     test_program = fluid.default_main_program().clone(for_test=True)
 
     optimizer = fluid.optimizer.Adam(learning_rate=0.001)
-    optimize_ops, params_grads = optimizer.minimize(avg_cost)
+    optimizer.minimize(avg_cost)
 
     BATCH_SIZE = 128
     PASS_NUM = 1
@@ -178,16 +178,16 @@ def train(net_type, use_cuda, save_dirname, is_local):
     if is_local:
         train_loop(fluid.default_main_program())
     else:
-        port = os.getenv("PADDLE_INIT_PORT", "6174")
-        pserver_ips = os.getenv("PADDLE_INIT_PSERVERS")  # ip,ip...
+        port = os.getenv("PADDLE_PSERVER_PORT", "6174")
+        pserver_ips = os.getenv("PADDLE_PSERVER_IPS")  # ip,ip...
         eplist = []
         for ip in pserver_ips.split(","):
             eplist.append(':'.join([ip, port]))
         pserver_endpoints = ",".join(eplist)  # ip:port,ip:port...
-        trainers = int(os.getenv("TRAINERS"))
+        trainers = int(os.getenv("PADDLE_TRAINERS"))
         current_endpoint = os.getenv("POD_IP") + ":" + port
-        trainer_id = int(os.getenv("PADDLE_INIT_TRAINER_ID"))
-        training_role = os.getenv("TRAINING_ROLE", "TRAINER")
+        trainer_id = int(os.getenv("PADDLE_TRAINER_ID"))
+        training_role = os.getenv("PADDLE_TRAINING_ROLE", "TRAINER")
         t = fluid.DistributeTranspiler()
         t.transpile(trainer_id, pservers=pserver_endpoints, trainers=trainers)
         if training_role == "PSERVER":
@@ -246,26 +246,6 @@ def infer(use_cuda, save_dirname=None):
         fluid.io.save_inference_model(save_dirname, feed_target_names,
                                       fetch_targets, exe,
                                       inference_transpiler_program)
-
-        if use_cuda and fluid.core.is_float16_supported(place):
-            # Use float16_transpiler to speedup
-            fp16_transpiler_program = inference_transpiler_program.clone()
-            t.float16_transpile(fp16_transpiler_program, place)
-
-            fp16_results = exe.run(fp16_transpiler_program,
-                                   feed={feed_target_names[0]: tensor_img},
-                                   fetch_list=fetch_targets)
-
-            assert len(results[0]) == len(fp16_results[0])
-            for i in range(len(results[0])):
-                np.testing.assert_almost_equal(
-                    results[0][i], fp16_results[0][i], decimal=2)
-
-            print("float16 infer results: ", fp16_results[0])
-
-            fluid.io.save_inference_model("float16_" + save_dirname,
-                                          feed_target_names, fetch_targets, exe,
-                                          fp16_transpiler_program)
 
 
 def main(net_type, use_cuda, is_local=True):

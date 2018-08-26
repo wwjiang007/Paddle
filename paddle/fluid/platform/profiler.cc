@@ -13,12 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #include "paddle/fluid/platform/profiler.h"
+
 #include <sys/time.h>
-#include <time.h>
 #include <algorithm>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <mutex>  // NOLINT
+#include <random>
 #include <string>
 #ifdef PADDLE_WITH_CUDA
 #include <cuda.h>
@@ -32,6 +34,10 @@ namespace paddle {
 namespace platform {
 
 struct EventList;
+
+static int64_t profiler_lister_id = 0;
+static bool should_send_profile_state = false;
+std::mutex profiler_mu;
 
 // The profiler state, the initial value is ProfilerState::kDisabled
 static ProfilerState g_state = ProfilerState::kDisabled;
@@ -90,12 +96,6 @@ inline uint64_t GetTimeInNsec() {
       .count();
 }
 
-inline uint64_t PosixInNsec() {
-  struct timeval tv;
-  gettimeofday(&tv, nullptr);
-  return 1000 * (static_cast<uint64_t>(tv.tv_sec) * 1000000 + tv.tv_usec);
-}
-
 Event::Event(EventType type, std::string name, uint32_t thread_id,
              const DeviceContext* dev_ctx)
     : type_(type), name_(name), thread_id_(thread_id), has_cuda_(false) {
@@ -103,6 +103,8 @@ Event::Event(EventType type, std::string name, uint32_t thread_id,
   has_cuda_ = dev_ctx ? platform::is_gpu_place(dev_ctx->GetPlace()) : false;
   if (has_cuda_) {
     auto* cuda_dev_ctx = static_cast<const CUDADeviceContext*>(dev_ctx);
+    PADDLE_ENFORCE(cudaSetDevice(
+        boost::get<platform::CUDAPlace>(cuda_dev_ctx->GetPlace()).device));
     PADDLE_ENFORCE(cudaGetDevice(&device_));
     PADDLE_ENFORCE(cudaEventCreate(&event_));
     auto stream = cuda_dev_ctx->stream();
@@ -120,6 +122,7 @@ double Event::CpuElapsedMs(const Event& e) const {
 
 double Event::CudaElapsedMs(const Event& e) const {
 #ifdef PADDLE_WITH_CUDA
+  if (!has_cuda_) return 0.0;
   PADDLE_ENFORCE(e.has_cuda() && has_cuda());
   PADDLE_ENFORCE(e.device() == device());
   PADDLE_ENFORCE(cudaEventSynchronize(event_));
@@ -167,8 +170,10 @@ void PopEvent(const std::string& name, const DeviceContext* dev_ctx) {
 }
 
 RecordEvent::RecordEvent(const std::string& name, const DeviceContext* dev_ctx)
-    : start_ns_(PosixInNsec()) {
+    : is_enabled_(false), start_ns_(PosixInNsec()) {
+  std::lock_guard<std::mutex> l(profiler_mu);
   if (g_state == ProfilerState::kDisabled) return;
+  is_enabled_ = true;
   dev_ctx_ = dev_ctx;
   name_ = name;
   PushEvent(name_, dev_ctx_);
@@ -177,55 +182,51 @@ RecordEvent::RecordEvent(const std::string& name, const DeviceContext* dev_ctx)
 }
 
 RecordEvent::~RecordEvent() {
-  if (g_state == ProfilerState::kDisabled) return;
+  std::lock_guard<std::mutex> l(profiler_mu);
+  if (g_state == ProfilerState::kDisabled || !is_enabled_) return;
   DeviceTracer* tracer = GetDeviceTracer();
   if (tracer) {
     tracer->AddCPURecords(CurAnnotation(), start_ns_, PosixInNsec(),
-                          BlockDepth(), CurThread());
+                          BlockDepth(), g_thread_id);
   }
   ClearCurAnnotation();
   PopEvent(name_, dev_ctx_);
 }
 
-RecordBlock::RecordBlock(int block_id) : start_ns_(PosixInNsec()) {
+RecordBlock::RecordBlock(int block_id)
+    : is_enabled_(false), start_ns_(PosixInNsec()) {
+  std::lock_guard<std::mutex> l(profiler_mu);
   if (g_state == ProfilerState::kDisabled) return;
+  is_enabled_ = true;
   SetCurBlock(block_id);
   name_ = string::Sprintf("block_%d", block_id);
 }
 
 RecordBlock::~RecordBlock() {
-  if (g_state == ProfilerState::kDisabled) return;
+  std::lock_guard<std::mutex> l(profiler_mu);
+  if (g_state == ProfilerState::kDisabled || !is_enabled_) return;
   DeviceTracer* tracer = GetDeviceTracer();
   if (tracer) {
     // We try to put all blocks at the same nested depth in the
     // same timeline lane. and distinguish the using thread_id.
     tracer->AddCPURecords(name_, start_ns_, PosixInNsec(), BlockDepth(),
-                          CurThread());
+                          g_thread_id);
   }
   ClearCurBlock();
-}
-
-RecordThread::RecordThread(int thread_id) {
-  if (g_state == ProfilerState::kDisabled) return;
-  SetCurThread(thread_id);
-}
-
-RecordThread::~RecordThread() {
-  if (g_state == ProfilerState::kDisabled) return;
-  ClearCurThread();
 }
 
 void EnableProfiler(ProfilerState state) {
   PADDLE_ENFORCE(state != ProfilerState::kDisabled,
                  "Can't enbale profling, since the input state is ",
                  "ProfilerState::kDisabled");
-  PADDLE_ENFORCE(g_state == ProfilerState::kDisabled,
-                 "The profiling state should be disabled when calling ",
-                 "EnableProfiler.");
-  g_state = state;
-  if (g_state == ProfilerState::kAll) {
-    GetDeviceTracer()->Enable();
+
+  std::lock_guard<std::mutex> l(profiler_mu);
+  if (state == g_state) {
+    return;
   }
+  g_state = state;
+  should_send_profile_state = true;
+  GetDeviceTracer()->Enable();
 #ifdef PADDLE_WITH_CUDA
   if (g_state == ProfilerState::kCUDA) {
     // Generate some dummy events first to reduce the startup overhead.
@@ -269,12 +270,13 @@ struct EventItem {
   double min_time;
   double max_time;
   double ave_time;
+  float ratio;
 };
 
 // Print results
 void PrintProfiler(const std::vector<std::vector<EventItem>>& events_table,
                    const std::string& sorted_domain, const size_t name_width,
-                   const size_t data_width) {
+                   const size_t data_width, double total) {
   // Output header information
   std::cout << "\n------------------------->"
             << "     Profiling Report     "
@@ -287,7 +289,7 @@ void PrintProfiler(const std::vector<std::vector<EventItem>>& events_table,
   } else if (g_state == ProfilerState::kAll) {
     place = "All";
   } else {
-    PADDLE_THROW("Invalid profiler state");
+    PADDLE_THROW("Invalid profiler state", g_state);
   }
 
   std::cout << "Place: " << place << std::endl;
@@ -299,7 +301,8 @@ void PrintProfiler(const std::vector<std::vector<EventItem>>& events_table,
   std::cout << std::setw(name_width) << "Event" << std::setw(data_width)
             << "Calls" << std::setw(data_width) << "Total"
             << std::setw(data_width) << "Min." << std::setw(data_width)
-            << "Max." << std::setw(data_width) << "Ave." << std::endl;
+            << "Max." << std::setw(data_width) << "Ave."
+            << std::setw(data_width) << "Ratio." << std::endl;
   for (size_t i = 0; i < events_table.size(); ++i) {
     for (size_t j = 0; j < events_table[i].size(); ++j) {
       const EventItem& event_item = events_table[i][j];
@@ -308,7 +311,9 @@ void PrintProfiler(const std::vector<std::vector<EventItem>>& events_table,
                 << std::setw(data_width) << event_item.total_time
                 << std::setw(data_width) << event_item.min_time
                 << std::setw(data_width) << event_item.max_time
-                << std::setw(data_width) << event_item.ave_time << std::endl;
+                << std::setw(data_width) << event_item.ave_time
+                << std::setw(data_width) << event_item.total_time / total
+                << std::endl;
     }
   }
   std::cout << std::endl;
@@ -358,6 +363,7 @@ void ParseEvents(const std::vector<std::vector<Event>>& events,
 
   std::vector<std::vector<EventItem>> events_table;
   size_t max_name_width = 0;
+  double total = 0.;  // the total time
   for (size_t i = 0; i < events.size(); i++) {
     std::list<Event> pushed_events;
     std::vector<EventItem> event_items;
@@ -378,6 +384,7 @@ void ParseEvents(const std::vector<std::vector<Event>>& events,
                                g_state == ProfilerState::kAll)
                                   ? rit->CudaElapsedMs(events[i][j])
                                   : rit->CpuElapsedMs(events[i][j]);
+          total += event_time;
 
           std::string event_name =
               "thread" + std::to_string(rit->thread_id()) + "::" + rit->name();
@@ -386,7 +393,8 @@ void ParseEvents(const std::vector<std::vector<Event>>& events,
           if (event_idx.find(event_name) == event_idx.end()) {
             event_idx[event_name] = event_items.size();
             EventItem event_item = {event_name, 1,          event_time,
-                                    event_time, event_time, event_time};
+                                    event_time, event_time, event_time,
+                                    0.};
             event_items.push_back(event_item);
           } else {
             int index = event_idx[event_name];
@@ -430,13 +438,13 @@ void ParseEvents(const std::vector<std::vector<Event>>& events,
   }
 
   // Print report
-  PrintProfiler(events_table, sorted_domain, max_name_width + 4, 12);
+  PrintProfiler(events_table, sorted_domain, max_name_width + 4, 12, total);
 }
 
 void DisableProfiler(EventSortingKey sorted_key,
                      const std::string& profile_path) {
-  PADDLE_ENFORCE(g_state != ProfilerState::kDisabled,
-                 "Can't disable profiling, since it's not starting.");
+  std::lock_guard<std::mutex> l(profiler_mu);
+  if (g_state == ProfilerState::kDisabled) return;
   // Mark the profiling stop.
   Mark("_stop_profiler_", nullptr);
 
@@ -444,12 +452,25 @@ void DisableProfiler(EventSortingKey sorted_key,
   ParseEvents(all_events, sorted_key);
   ResetProfiler();
   DeviceTracer* tracer = GetDeviceTracer();
-  if (g_state == ProfilerState::kAll && tracer && tracer->IsEnabled()) {
+  if (tracer->IsEnabled()) {
     tracer->Disable();
     tracer->GenProfile(profile_path);
   }
   g_state = ProfilerState::kDisabled;
+  should_send_profile_state = true;
 }
+
+bool IsProfileEnabled() { return g_state != ProfilerState::kDisabled; }
+bool ShouldSendProfileState() { return should_send_profile_state; }
+
+void SetProfileListener() {
+  std::mt19937 rng;
+  rng.seed(std::random_device()());
+  std::uniform_int_distribution<std::mt19937::result_type> dist6(
+      1, std::numeric_limits<int>::max());
+  profiler_lister_id = dist6(rng);
+}
+int64_t ListenerId() { return profiler_lister_id; }
 
 }  // namespace platform
 }  // namespace paddle
