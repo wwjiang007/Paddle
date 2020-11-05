@@ -22,7 +22,7 @@ This API is still under active development and may change drastically.
 
 from __future__ import print_function
 
-import contextlib
+from ...wrapped_decorator import signature_safe_contextmanager
 import numpy as np
 import six
 
@@ -419,7 +419,7 @@ class TrainingDecoder(object):
         self._state_cell = state_cell
         self._state_cell._enter_decoder(self)
 
-    @contextlib.contextmanager
+    @signature_safe_contextmanager
     def block(self):
         """
         Define the behavior of the decoder for each RNN time step.
@@ -427,8 +427,10 @@ class TrainingDecoder(object):
         if self._status != TrainingDecoder.BEFORE_DECODER:
             raise ValueError('decoder.block() can only be invoked once')
         self._status = TrainingDecoder.IN_DECODER
+
         with self._dynamic_rnn.block():
             yield
+
         self._status = TrainingDecoder.AFTER_DECODER
         self._state_cell._leave_decoder(self)
 
@@ -613,7 +615,7 @@ class BeamSearchDecoder(object):
         self._word_dim = word_dim
         self._input_var_dict = input_var_dict
 
-    @contextlib.contextmanager
+    @signature_safe_contextmanager
     def block(self):
         """
         Define the behavior of the decoder for each RNN time step.

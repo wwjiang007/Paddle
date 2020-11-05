@@ -50,13 +50,16 @@ class MeanGradKernel : public framework::OpKernel<T> {
  public:
   void Compute(const framework::ExecutionContext& context) const override {
     auto OG = context.Input<Tensor>(framework::GradVarName("Out"));
-    PADDLE_ENFORCE(OG->numel() == 1, "Mean Gradient should be scalar");
+    PADDLE_ENFORCE_EQ(OG->numel(), 1UL,
+                      platform::errors::InvalidArgument(
+                          "Mean Gradient should be scalar. But received "
+                          "Out@Grad's elements num is %d.",
+                          OG->numel()));
     auto IG = context.Output<Tensor>(framework::GradVarName("X"));
     IG->mutable_data<T>(context.GetPlace());
 
     T ig_size = static_cast<T>(IG->numel());
-    Eigen::DSizes<int, 1> bcast(ig_size);
-
+    Eigen::DSizes<int, 1> bcast(static_cast<int>(ig_size));
     EigenVector<T>::Flatten(*IG).device(
         *context.template device_context<DeviceContext>().eigen_device()) =
         (EigenVector<T>::From(*OG) / ig_size).broadcast(bcast);

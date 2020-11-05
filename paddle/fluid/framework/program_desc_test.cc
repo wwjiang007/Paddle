@@ -13,11 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #include "paddle/fluid/framework/program_desc.h"
+
 #include "gtest/gtest.h"
-#include "paddle/fluid/framework/block_desc.h"
 
 namespace paddle {
 namespace framework {
+class VarDesc;
+
 TEST(ProgramDesc, copy_ctor) {
   ProgramDesc program;
   auto* global_block = program.MutableBlock(0);
@@ -87,14 +89,23 @@ TEST(ProgramDesc, copy_ctor) {
     ASSERT_EQ(op_origin->Inputs(), op_copy->Inputs());
     ASSERT_EQ(op_origin->Outputs(), op_copy->Outputs());
 
-    ASSERT_EQ(op_copy->Proto()->SerializeAsString(),
-              op_origin->Proto()->SerializeAsString());
+    ASSERT_EQ(op_origin->Proto()->attrs().size(),
+              op_copy->Proto()->attrs().size());
+    for (auto it = op_origin->Proto()->attrs().begin();
+         it != op_origin->Proto()->attrs().end(); ++it) {
+      for (auto it_2 = op_copy->Proto()->attrs().begin();
+           it_2 != op_copy->Proto()->attrs().end(); ++it_2) {
+        if (it->name() == it_2->name()) {
+          ASSERT_TRUE(it_2->SerializeAsString() == it->SerializeAsString());
+        }
+      }
+    }
 
     if (op->Type() == "op_with_subblock") {
       ASSERT_EQ(1, op->GetBlockAttrId("sub_block"));
       found_sub_block = true;
 
-      ASSERT_EQ(2, op->GetBlocksAttrIds("sub_blocks").size());
+      ASSERT_EQ(2UL, op->GetBlocksAttrIds("sub_blocks").size());
       found_sub_blocks = true;
     }
   }

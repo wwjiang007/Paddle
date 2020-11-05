@@ -16,7 +16,9 @@ from __future__ import print_function
 
 import unittest
 import numpy as np
-from op_test import OpTest
+import paddle
+import paddle.fluid as fluid
+from op_test import OpTest, skip_check_grad_ci
 
 
 def l2_norm(x, axis, epsilon):
@@ -44,7 +46,7 @@ class TestNormOp(OpTest):
         self.check_grad(['X'], 'Out')
 
     def init_test_case(self):
-        self.shape = [2, 3, 4, 4]
+        self.shape = [2, 3, 4, 5]
         self.axis = 1
         self.epsilon = 1e-8
 
@@ -61,6 +63,41 @@ class TestNormOp3(TestNormOp):
         self.shape = [5, 3, 2, 7]
         self.axis = -1
         self.epsilon = 1e-8
+
+
+@skip_check_grad_ci(reason="'check_grad' on large inputs is too slow, " +
+                    "however it is desirable to cover the forward pass")
+class TestNormOp4(TestNormOp):
+    def init_test_case(self):
+        self.shape = [128, 1024, 14, 14]
+        self.axis = 2
+        self.epsilon = 1e-8
+
+    def test_check_grad(self):
+        pass
+
+
+@skip_check_grad_ci(reason="'check_grad' on large inputs is too slow, " +
+                    "however it is desirable to cover the forward pass")
+class TestNormOp5(TestNormOp):
+    def init_test_case(self):
+        self.shape = [2048, 2048]
+        self.axis = 1
+        self.epsilon = 1e-8
+
+    def test_check_grad(self):
+        pass
+
+
+class API_NormTest(unittest.TestCase):
+    def test_errors(self):
+        with fluid.program_guard(fluid.Program()):
+
+            def test_norm_x_type():
+                data = fluid.data(name="x", shape=[3, 3], dtype="int64")
+                out = fluid.layers.l2_normalize(data)
+
+            self.assertRaises(TypeError, test_norm_x_type)
 
 
 if __name__ == '__main__':

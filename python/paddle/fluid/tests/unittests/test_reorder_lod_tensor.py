@@ -18,8 +18,17 @@ import unittest
 import paddle.fluid as fluid
 import paddle.fluid.core as core
 from paddle.fluid.layers.control_flow import lod_rank_table
+from paddle.fluid import Program, program_guard
 import numpy
 import functools
+
+
+def convert_to_offset(lod):
+    offset = [[0] for i in lod]
+    for i, level in enumerate(lod):
+        for seq_len in level:
+            offset[i].append(offset[i][-1] + seq_len)
+    return offset
 
 
 class TestReorderLoDTensor(unittest.TestCase):
@@ -91,13 +100,6 @@ class TestReorderLoDTensor(unittest.TestCase):
             self.inputs[desc[0]] = tensor
 
     def reorder(self):
-        def convert_to_offset(lod):
-            offset_lod = [[0] for i in lod]
-            for i, level in enumerate(lod):
-                for seq_len in level:
-                    offset_lod[i].append(offset_lod[i][-1] + seq_len)
-            return offset_lod
-
         level = 0
         # compute the rank_table according to ref_lod
         ref_lod = self.data[self.data_desc[1][0]][1][level]
@@ -206,6 +208,30 @@ class TestReorderLoDTensor(unittest.TestCase):
             self.assertTrue(
                 numpy.allclose(
                     numpy.array(actual_output), expect_output, atol=0.001))
+
+
+class TestReorderLoDTensorError(unittest.TestCase):
+    def test_errors(self):
+        with program_guard(Program()):
+
+            def test_Variable():
+                # The input must be Variable.
+                x1 = numpy.array([0.9383, 0.1983, 3.2, 1.2]).astype("float64")
+                table1 = numpy.array(
+                    [0.9383, 0.1983, 3.2, 1.2]).astype("float64")
+                new_dat = fluid.layers.reorder_lod_tensor_by_rank(
+                    x=x1, rank_table=table1)
+
+            self.assertRaises(TypeError, test_Variable)
+
+            def test_type():
+                x2 = fluid.layers.data(name='x1', shape=[4], dtype='float32')
+                table2 = fluid.layers.data(
+                    name='table2', shape=[4], dtype='int32')
+                new_dat2 = fluid.layers.reorder_lod_tensor_by_rank(
+                    x=x2, rank_table=table2)
+
+            self.assertRaises(TypeError, test_type)
 
 
 if __name__ == '__main__':

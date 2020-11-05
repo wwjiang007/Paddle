@@ -12,12 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <chrono>  // NOLINT
-#include <set>
 #include <thread>  // NOLINT
-#include <vector>
-#include "gtest/gtest.h"
 
+#include "gtest/gtest.h"
 #include "paddle/fluid/operators/reader/blocking_queue.h"
 
 using paddle::operators::reader::BlockingQueue;
@@ -216,4 +213,28 @@ TEST(BlockingQueue, MyClassTest) {
   MyClass b;
   q.Receive(&b);
   EXPECT_EQ(a.val_, b.val_);
+}
+
+TEST(BlockingQueue, speed_test_mode) {
+  size_t queue_size = 10;
+  BlockingQueue<size_t> q1(queue_size, false);
+  for (size_t i = 0; i < queue_size; ++i) {
+    q1.Send(i);
+  }
+  size_t b;
+  for (size_t i = 0; i < queue_size; ++i) {
+    q1.Receive(&b);
+    EXPECT_EQ(b, i);
+  }
+  EXPECT_EQ(q1.Size(), 0UL);
+
+  BlockingQueue<size_t> q2(queue_size, true);
+  for (size_t i = 0; i < queue_size; ++i) {
+    q2.Send(i);
+  }
+  for (size_t i = 0; i < queue_size; ++i) {
+    q2.Receive(&b);
+    EXPECT_EQ(b, 0UL);
+  }
+  EXPECT_EQ(q2.Size(), queue_size);
 }

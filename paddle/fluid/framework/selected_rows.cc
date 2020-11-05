@@ -15,6 +15,12 @@ limitations under the License. */
 #include "paddle/fluid/framework/selected_rows.h"
 
 namespace paddle {
+namespace platform {
+class DeviceContext;
+}  // namespace platform
+}  // namespace paddle
+
+namespace paddle {
 namespace framework {
 
 struct ReAllocateVisitor {
@@ -49,7 +55,7 @@ struct TensorCopyVisitor {
         size_(size) {}
 
   template <typename T>
-  void operator()() const {
+  void apply() const {
     // TODO(Yancey1989): support other place
     platform::CPUPlace cpu;
     memory::Copy(cpu, dst_->mutable_data<T>(cpu) + dst_offset_, cpu,
@@ -60,6 +66,26 @@ struct TensorCopyVisitor {
   int64_t dst_offset_;
   framework::Tensor src_;
   int64_t src_offset_;
+  int64_t size_;
+};
+
+struct TensorFillVisitor {
+  TensorFillVisitor(framework::Tensor* dst, int64_t dst_offset, int64_t size,
+                    float value)
+      : dst_(dst), dst_offset_(dst_offset), size_(size) {}
+
+  template <typename T>
+  void apply() const {
+    // TODO(qiao): support other place
+    platform::CPUPlace cpu;
+    auto* tensor_data = dst_->mutable_data<T>(cpu);
+    auto* start = tensor_data + dst_offset_;
+    auto* end = start + size_;
+    std::fill(start, end, static_cast<T>(0.0));
+  }
+
+  framework::Tensor* dst_;
+  int64_t dst_offset_;
   int64_t size_;
 };
 
@@ -93,7 +119,9 @@ void DeserializeFromStream(std::istream& is, SelectedRows* selected_rows,
     // the 1st field, unit32_t version for SelectedRows
     uint32_t version;
     is.read(reinterpret_cast<char*>(&version), sizeof(version));
-    PADDLE_ENFORCE_EQ(version, 0U, "Only version 0 is supported");
+    PADDLE_ENFORCE_EQ(version, 0U,
+                      platform::errors::InvalidArgument(
+                          "Only version 0 SelectedRows is supported."));
   }
   {
     // the 2st field, rows information
@@ -120,29 +148,42 @@ bool SelectedRows::HasKey(int64_t key) const {
                                                                    : true;
 }
 
-int64_t SelectedRows::AutoGrownIndex(int64_t key, bool auto_grown) {
+int64_t SelectedRows::AutoGrownIndex(int64_t key, bool auto_grown,
+                                     bool is_test) {
+  if (is_test) {
+    auto iter = id_to_index_.find(key);
+    if (iter == id_to_index_.end()) {
+      return -1;
+    } else {
+      return iter->second;
+    }
+  }
+
   rwlock_->RDLock();
   auto iter = id_to_index_.find(key);
   if (iter == id_to_index_.end()) {
     rwlock_->UNLock();
-    if (!auto_grown) {
-      PADDLE_THROW("key %d not found", key);
-    }
+    PADDLE_ENFORCE_EQ(
+        auto_grown, true,
+        platform::errors::NotFound("Input key(%lld) is not found.", key));
     rwlock_->WRLock();
     auto map_size = id_to_index_.size();
     auto vector_size = rows_.size();
     if (map_size != vector_size) {
       rwlock_->UNLock();
-      PADDLE_THROW(
-          "id_to_index_ size %d should have the same size with rows_ %d",
-          map_size, vector_size);
+      PADDLE_THROW(platform::errors::InvalidArgument(
+          "Row map size(%zu) should be equal to rows size(%zu).", map_size,
+          vector_size));
     }
     auto write_iter = id_to_index_.find(key);
     if (write_iter == id_to_index_.end()) {
       int row_num = rows_.size();
       if (row_num == value_->dims()[0]) {
         rwlock_->UNLock();
-        PADDLE_THROW("selected rows is full, then length exceed %d", row_num);
+        PADDLE_THROW(platform::errors::InvalidArgument(
+            "Selected rows is full, then length exceed the length of first "
+            "dimension (%d).",
+            row_num));
       }
       // key logic to put a key into id_to_index_
       rows_.push_back(key);
@@ -172,22 +213,35 @@ void SelectedRows::SyncIndex() {
 }
 
 void SelectedRows::Get(const framework::Tensor& ids, framework::Tensor* value,
-                       bool auto_grown) {
-  PADDLE_ENFORCE(value->IsInitialized(),
-                 "The value tensor should be initialized.");
+                       bool auto_grown, bool is_test) {
+  PADDLE_ENFORCE_EQ(value->IsInitialized(), true,
+                    platform::errors::InvalidArgument(
+                        "The value tensor is not initialized."));
   if (ids.numel() == 0) {
     VLOG(3) << "keys is empty, please check data!";
   } else {
     int64_t value_width = value_->numel() / value_->dims()[0];
-    PADDLE_ENFORCE_EQ(value_width, value->numel() / value->dims()[0],
-                      "output tensor should have the same shape with table "
-                      "except the dims[0].");
+    PADDLE_ENFORCE_EQ(
+        value_width, value->numel() / value->dims()[0],
+        platform::errors::InvalidArgument(
+            "Output tensor should have the same shape with table "
+            "except the first dimmension, excepted value width not counting "
+            "the first dimension is %d, actual value width is %d.",
+            value_width, value->numel() / value->dims()[0]));
     for (int i = 0; i < ids.numel(); ++i) {
-      int64_t index = AutoGrownIndex(ids.data<int64_t>()[i], auto_grown);
-      framework::VisitDataType(
-          framework::ToDataType(value_->type()),
-          TensorCopyVisitor(value, i * value_width, *value_.get(),
-                            index * value_width, value_width));
+      auto id = ids.data<int64_t>()[i];
+      int64_t index = AutoGrownIndex(id, auto_grown, is_test);
+      if (index < 0) {
+        VLOG(5) << "id " << id << " not in the table, return 0";
+        framework::VisitDataType(
+            value_->type(),
+            TensorFillVisitor(value, i * value_width, value_width, 0.0));
+      } else {
+        framework::VisitDataType(
+            value_->type(),
+            TensorCopyVisitor(value, i * value_width, *value_.get(),
+                              index * value_width, value_width));
+      }
     }
   }
 }

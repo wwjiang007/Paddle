@@ -7,15 +7,14 @@
 # WITH_MKLDNN=ON|OFF
 
 PADDLE_LIB=/paddle/lib/dir
-cmake .. -DFLUID_INSTALL_DIR=$PADDLE_LIB \
+cmake .. -DPADDLE_INSTALL_DIR=$PADDLE_LIB \
          -DCMAKE_BUILD_TYPE=Release \
-         -DWITH_FLUID_ONLY=ON \
          -DWITH_GPU=OFF \
          -DWITH_STYLE_CHECK=OFF \
          -DWITH_MKL=OFF \
          -DWITH_MKLDNN=OFF
 make -j8
-make -j8 inference_lib_dist
+make -j8 fluid_lib_dist
 ```
 
 ### step 2. generate program desc
@@ -42,7 +41,7 @@ cd build
 # WITH_MKLDNN=ON|OFF
 PADDLE_LIB=/paddle/lib/dir
 
-# PADDLE_LIB is the same with FLUID_INSTALL_DIR when building the lib
+# PADDLE_LIB is the same with PADDLE_INSTALL_DIR when building the lib
 cmake .. -DPADDLE_LIB=$PADDLE_LIB \
          -DWITH_MKLDNN=OFF \
          -DWITH_MKL=OFF

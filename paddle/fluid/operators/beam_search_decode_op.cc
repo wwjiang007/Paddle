@@ -12,11 +12,23 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License. */
 
-#include <algorithm>
 #include <string>
 
 #include "paddle/fluid/operators/beam_search_decode_op.h"
 #include "paddle/fluid/platform/device_context.h"
+
+namespace paddle {
+namespace framework {
+class InferShapeContext;
+class OpDesc;
+class Scope;
+template <typename T>
+class EmptyGradOpMaker;
+}  // namespace framework
+namespace imperative {
+class OpBase;
+}  // namespace imperative
+}  // namespace paddle
 
 namespace paddle {
 namespace operators {
@@ -74,11 +86,14 @@ struct BeamSearchDecodeFunctor {
   }
 
   template <typename T>
-  void operator()() const;
+  void apply() const;
 
   bool tensor_on_gpu_;
   size_t beam_size_;
   int end_id_;
+  // TODO(Superjomn) Here might result serious performance issue in the
+  // concurrency
+  // scenarios.
   const LoDTensorArray& step_ids_origin_;
   const LoDTensorArray& step_scores_origin_;
   LoDTensorArray step_ids_ = LoDTensorArray();
@@ -88,7 +103,7 @@ struct BeamSearchDecodeFunctor {
 };
 
 template <typename T>
-void BeamSearchDecodeFunctor::operator()() const {
+void BeamSearchDecodeFunctor::apply() const {
   BeamSearchDecoder<T> beam_search_decoder(beam_size_, end_id_);
   // Check if the tensor is on GPU. If so, use the CPU copy instead
   if (tensor_on_gpu_) {
@@ -101,8 +116,9 @@ void BeamSearchDecodeFunctor::operator()() const {
 }
 
 template <>
-void BeamSearchDecodeFunctor::operator()<bool>() const {
-  PADDLE_THROW("beam search decode op does not support bool!");
+void BeamSearchDecodeFunctor::apply<bool>() const {
+  PADDLE_THROW(platform::errors::InvalidArgument(
+      "beam search decode op does not support bool!"));
 }
 
 class BeamSearchDecodeOp : public framework::OperatorBase {
@@ -119,19 +135,37 @@ class BeamSearchDecodeOp : public framework::OperatorBase {
     platform::DeviceContextPool& pool = platform::DeviceContextPool::Instance();
     auto& dev_ctx = *pool.Get(dev_place);
 
-    framework::ExecutionContext ctx(*this, scope, dev_ctx);
+    framework::RuntimeContext run_ctx(Inputs(), Outputs(), scope);
+    framework::ExecutionContext ctx(*this, scope, dev_ctx, run_ctx);
 
     const LoDTensorArray* ids = ctx.Input<LoDTensorArray>("Ids");
     const LoDTensorArray* scores = ctx.Input<LoDTensorArray>("Scores");
     const size_t step_num = ids->size();
-    PADDLE_ENFORCE_GT(step_num, 0UL,
-                      "beam search steps should be larger than 0");
+    PADDLE_ENFORCE_GT(
+        step_num, 0UL,
+        platform::errors::InvalidArgument(
+            "beam search steps, which is the"
+            "size of Input(Ids) LoDTensorArray. beam search steps should "
+            "be larger than 0, but received %d. ",
+            step_num));
     const size_t source_num = ids->at(0).lod().at(0).size() - 1;
-    PADDLE_ENFORCE_GT(source_num, 0UL, "source num should be larger than 0");
+    PADDLE_ENFORCE_GT(
+        source_num, 0UL,
+        platform::errors::InvalidArgument(
+            "source_num is the sequence number of the"
+            "first decoding step, indicating by Input(Ids)[0].lod[0].size. "
+            "The number of source_num should be larger than"
+            "0, but received %d. ",
+            source_num));
 
     for (size_t i = 0; i < step_num; ++i) {
-      PADDLE_ENFORCE_EQ(ids->at(i).lod().size(), 2UL,
-                        "Level of LodTensor should be 2");
+      PADDLE_ENFORCE_EQ(
+          ids->at(i).lod().size(), 2UL,
+          platform::errors::InvalidArgument(
+              "For the i step in beam search steps,"
+              "the size of Input(Ids)[i].lod() should larger than 2,"
+              "but received %d. ",
+              ids->at(i).lod().size()));
     }
 
     size_t beam_size = ctx.Attr<int>("beam_size");
@@ -142,7 +176,7 @@ class BeamSearchDecodeOp : public framework::OperatorBase {
     LoDTensor* sentenceScores = ctx.Output<LoDTensor>("SentenceScores");
 
     framework::VisitDataType(
-        framework::ToDataType(scores->at(0).type()),
+        scores->at(0).type(),
         BeamSearchDecodeFunctor(*ids, *scores, sentenceIds, sentenceScores,
                                 beam_size, end_id));
   }
@@ -174,10 +208,10 @@ Beam Search Decode Operator. This Operator constructs the full hypotheses for
 each source sentence by walking back along the LoDTensorArray Input(ids)
 whose lods can be used to restore the path in the beam search tree.
 
-The Output(SentenceIds) and Output(SentenceScores) separately contain the 
-generated id sequences and the corresponding scores. The shapes and lods of the 
-two LodTensor are same. The lod level is 2 and the two levels separately 
-indicate how many hypotheses each source sentence has and how many ids each 
+The Output(SentenceIds) and Output(SentenceScores) separately contain the
+generated id sequences and the corresponding scores. The shapes and lods of the
+two LodTensor are same. The lod level is 2 and the two levels separately
+indicate how many hypotheses each source sentence has and how many ids each
 hypothesis has.
 )DOC");
   }
@@ -186,37 +220,34 @@ hypothesis has.
 class BeamSearchDecodeInferShape : public framework::InferShapeBase {
  public:
   void operator()(framework::InferShapeContext* context) const override {
-    PADDLE_ENFORCE(context->HasInput("Ids"),
-                   "BeamSearchDecodeOp must has input Ids");
-    PADDLE_ENFORCE(context->HasInput("Scores"),
-                   "BeamSearchDecodeOp must has input Scores");
-    PADDLE_ENFORCE(context->HasOutput("SentenceIds"),
-                   "BeamSearchDecodeOp must has output SentenceIds");
-    PADDLE_ENFORCE(context->HasOutput("SentenceScores"),
-                   "BeamSearchDecodeOp must has output SentenceScores");
+    OP_INOUT_CHECK(context->HasInput("Ids"), "Input", "Ids",
+                   "BeamSearchDecode");
+    OP_INOUT_CHECK(context->HasInput("Scores"), "Input", "Scores",
+                   "BeamSearchDecode");
+    OP_INOUT_CHECK(context->HasOutput("SentenceIds"), "Output", "SentenceIds",
+                   "BeamSearchDecode");
+    OP_INOUT_CHECK(context->HasOutput("SentenceScores"), "Output",
+                   "SentenceScores", "BeamSearchDecode");
   }
 };
 
 class BeamSearchDecodeInferVarType : public framework::VarTypeInference {
  public:
-  void operator()(const framework::OpDesc& op_desc,
-                  framework::BlockDesc* block) const override {
-    for (auto& o : op_desc.Output("SentenceIds")) {
-      auto& sentence_ids = block->FindRecursiveOrCreateVar(o);
-      sentence_ids.SetType(framework::proto::VarType::LOD_TENSOR);
-    }
-    for (auto& o : op_desc.Output("SentenceScores")) {
-      auto& sentence_scores = block->FindRecursiveOrCreateVar(o);
-      sentence_scores.SetType(framework::proto::VarType::LOD_TENSOR);
-    }
+  void operator()(framework::InferVarTypeContext* ctx) const override {
+    ctx->SetOutputType("SentenceIds", framework::proto::VarType::LOD_TENSOR,
+                       framework::ALL_ELEMENTS);
+    ctx->SetOutputType("SentenceScores", framework::proto::VarType::LOD_TENSOR,
+                       framework::ALL_ELEMENTS);
   }
 };
 
 }  // namespace operators
 }  // namespace paddle
 
-REGISTER_OPERATOR(beam_search_decode, paddle::operators::BeamSearchDecodeOp,
-                  paddle::operators::BeamSearchDecodeOpProtoMaker,
-                  paddle::operators::BeamSearchDecodeInferShape,
-                  paddle::operators::BeamSearchDecodeInferVarType,
-                  paddle::framework::EmptyGradOpMaker);
+REGISTER_OPERATOR(
+    beam_search_decode, paddle::operators::BeamSearchDecodeOp,
+    paddle::operators::BeamSearchDecodeOpProtoMaker,
+    paddle::operators::BeamSearchDecodeInferShape,
+    paddle::operators::BeamSearchDecodeInferVarType,
+    paddle::framework::EmptyGradOpMaker<paddle::framework::OpDesc>,
+    paddle::framework::EmptyGradOpMaker<paddle::imperative::OpBase>);

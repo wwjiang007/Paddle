@@ -19,9 +19,12 @@ limitations under the License. */
 #include <cuda_runtime.h>
 #include <stddef.h>
 #include <string>
+#include <vector>
 
 namespace paddle {
 namespace platform {
+//! Get the version of cudnn
+int CudnnVersion();
 
 //! Get the total number of GPU devices in system.
 int GetCUDADeviceCount();
@@ -29,14 +32,32 @@ int GetCUDADeviceCount();
 //! Get the compute capability of the ith GPU (format: major * 10 + minor)
 int GetCUDAComputeCapability(int i);
 
+//! Get the runtime version of the ith GPU
+int GetCUDARuntimeVersion(int id);
+
+//! Get the driver version of the ith GPU
+int GetCUDADriverVersion(int id);
+
+//! Wheter the current device support TensorCore
+bool TensorCoreAvailable();
+
 //! Get the MultiProcessors of the ith GPU.
 int GetCUDAMultiProcessors(int i);
 
 //! Get the MaxThreads of each MultiProcessor of the ith GPU.
 int GetCUDAMaxThreadsPerMultiProcessor(int i);
 
+//! Get the MaxThreads of each block of the ith GPU.
+int GetCUDAMaxThreadsPerBlock(int i);
+
 //! Get the current GPU device id in system.
 int GetCurrentDeviceId();
+
+//! Get the maximum GridDim size for GPU buddy allocator.
+dim3 GetGpuMaxGridDimSize(int);
+
+//! Get a list of device ids from environment variable or use all.
+std::vector<int> GetSelectedDevices();
 
 //! Set the GPU device id for next execution.
 void SetDeviceId(int device_id);
@@ -44,8 +65,18 @@ void SetDeviceId(int device_id);
 //! Get the memory usage of current GPU device.
 void GpuMemoryUsage(size_t *available, size_t *total);
 
+//! Get the available memory to allocate, which is the size of available gpu
+//! minus reserving.
+size_t GpuAvailableMemToAlloc();
+
 //! Get the maximum allocation size of current GPU device.
 size_t GpuMaxAllocSize();
+
+//! Get the initial allocation size of current GPU device.
+size_t GpuInitAllocSize();
+
+//! Get the re-allocation size of current GPU device.
+size_t GpuReallocSize();
 
 //! Get the minimum chunk size for GPU buddy allocator.
 size_t GpuMinChunkSize();
@@ -71,6 +102,24 @@ void GpuMemcpyPeerSync(void *dst, int dst_device, const void *src,
 
 //! Set memory dst with value count size asynchronously
 void GpuMemsetAsync(void *dst, int value, size_t count, cudaStream_t stream);
+
+//! Blocks until stream has completed all operations.
+void GpuStreamSync(cudaStream_t stream);
+
+//! CudaMalloc with recorded info
+cudaError_t RecordedCudaMalloc(void **ptr, size_t size, int dev_id);
+
+//! CudaFree with recorded info
+void RecordedCudaFree(void *p, size_t size, int dev_id);
+
+//! Get available and total gpu memory with considering limitation
+bool RecordedCudaMemGetInfo(size_t *avail, size_t *total, size_t *actual_avail,
+                            size_t *actual_total, int dev_id);
+
+//! Get recorded cudaMalloc size. If record is disabled, return 0.
+uint64_t RecordedCudaMallocSize(int dev_id);
+
+bool IsCudaMallocRecorded(int dev_id);
 
 }  // namespace platform
 }  // namespace paddle

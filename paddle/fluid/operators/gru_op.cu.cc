@@ -15,12 +15,20 @@ limitations under the License. */
 #include "paddle/fluid/operators/gru_op.h"
 
 namespace paddle {
+namespace platform {
+class CUDADeviceContext;
+struct CUDAPlace;
+}  // namespace platform
+}  // namespace paddle
+
+namespace paddle {
 namespace operators {
 
 template <typename DeviceContext, typename T>
 class GRUKernel : public framework::OpKernel<T> {
  public:
   void BatchCompute(const framework::ExecutionContext& context) const {
+    bool origin_mode = context.Attr<bool>("origin_mode");
     auto* input = context.Input<LoDTensor>("Input");
     auto* h0 = context.Input<Tensor>("H0");
     auto* weight = context.Input<Tensor>("Weight");
@@ -87,7 +95,7 @@ class GRUKernel : public framework::OpKernel<T> {
       gru_value.reset_output_value = reset_hidden_prev_t.data<T>();
       math::GRUUnitFunctor<DeviceContext, T>::compute(
           dev_ctx, gru_value, frame_size, cur_batch_size, active_node,
-          active_gate);
+          active_gate, origin_mode);
       gru_value.prev_out_value = gru_value.output_value;
     }
 

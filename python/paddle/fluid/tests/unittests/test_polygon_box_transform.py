@@ -16,6 +16,7 @@ from __future__ import print_function
 
 import unittest
 import numpy as np
+import paddle.fluid as fluid
 from op_test import OpTest
 
 
@@ -37,7 +38,7 @@ def PolygonBoxRestore(input):
     indexes = indexes.repeat(
         [batch_size], axis=0)  # [batch_size, geo_channels/2, 2, h, w]
     return indexes.reshape(
-        input.shape) - input  # [batch_size, geo_channels, h, w]
+        input.shape) * 4 - input  # [batch_size, geo_channels, h, w]
 
 
 class TestPolygonBoxRestoreOp(OpTest):
@@ -64,6 +65,16 @@ class TestCase1(TestPolygonBoxRestoreOp):
 class TestCase2(TestPolygonBoxRestoreOp):
     def config(self):
         self.input_shape = (3, 12, 4, 5)
+
+
+class TestPolygonBoxInvalidInput(unittest.TestCase):
+    def test_error(self):
+        def test_invalid_input():
+            input = fluid.data(
+                name='input', shape=[None, 3, 32, 32], dtype='int64')
+            out = fluid.layers.polygon_box_transform(input)
+
+        self.assertRaises(TypeError, test_invalid_input)
 
 
 if __name__ == '__main__':

@@ -23,10 +23,14 @@ namespace framework {
 template <typename T>
 inline const T* Tensor::data() const {
   check_memory_size();
-  bool valid = std::is_same<T, void>::value ||
-               holder_->type() == std::type_index(typeid(T));
-  PADDLE_ENFORCE(valid, "Tensor holds the wrong type, it holds %s",
-                 this->holder_->type().name());
+  bool valid =
+      std::is_same<T, void>::value || type_ == DataTypeTrait<T>::DataType();
+  PADDLE_ENFORCE_EQ(
+      valid, true,
+      platform::errors::InvalidArgument(
+          "Tensor holds the wrong type, it holds %s, but desires to be %s.",
+          DataTypeToString(type_),
+          DataTypeToString(DataTypeTrait<T>::DataType())));
 
   return reinterpret_cast<const T*>(
       reinterpret_cast<uintptr_t>(holder_->ptr()) + offset_);
@@ -37,16 +41,21 @@ inline bool Tensor::IsInitialized() const { return holder_ != nullptr; }
 template <typename T>
 inline T* Tensor::data() {
   check_memory_size();
-  bool valid = std::is_same<T, void>::value ||
-               holder_->type() == std::type_index(typeid(T));
-  PADDLE_ENFORCE(valid, "Tensor holds the wrong type, it holds %s",
-                 this->holder_->type().name());
+  bool valid =
+      std::is_same<T, void>::value || type_ == DataTypeTrait<T>::DataType();
+  PADDLE_ENFORCE_EQ(
+      valid, true,
+      platform::errors::InvalidArgument(
+          "Tensor holds the wrong type, it holds %s, but desires to be %s",
+          DataTypeToString(type_),
+          DataTypeToString(DataTypeTrait<T>::DataType())));
+
   return reinterpret_cast<T*>(reinterpret_cast<uintptr_t>(holder_->ptr()) +
                               offset_);
 }
 
 template <typename T>
-inline T* Tensor::mutable_data(DDim dims, platform::Place place,
+inline T* Tensor::mutable_data(const DDim& dims, const platform::Place& place,
                                size_t requested_size) {
   static_assert(std::is_pod<T>::value, "T must be POD");
   Resize(dims);
@@ -54,17 +63,22 @@ inline T* Tensor::mutable_data(DDim dims, platform::Place place,
 }
 
 template <typename T>
-inline T* Tensor::mutable_data(platform::Place place, size_t requested_size) {
+inline T* Tensor::mutable_data(const platform::Place& place,
+                               size_t requested_size) {
   static_assert(std::is_pod<T>::value, "T must be POD");
-  return reinterpret_cast<T*>(mutable_data(place, typeid(T), requested_size));
+  return reinterpret_cast<T*>(
+      mutable_data(place, DataTypeTrait<T>::DataType(), requested_size));
 }
 
 inline Tensor ReshapeToMatrix(const Tensor& src, int num_col_dims) {
   int rank = src.dims().size();
   PADDLE_ENFORCE_GE(
-      rank, 2,
-      "'ReshapeToMatrix()' is only used for flatten high rank "
-      "tensors to matrixs. Can not be used in reshaping vectors.");
+      rank, 2, platform::errors::InvalidArgument(
+                   "'ReshapeToMatrix()' is only used for flatten high rank "
+                   "tensors to matrixs. The dimensions of Tensor must be "
+                   "greater or equal than 2. "
+                   "But received dimensions of Tensor is %d",
+                   rank));
   if (rank == 2) {
     return src;
   }

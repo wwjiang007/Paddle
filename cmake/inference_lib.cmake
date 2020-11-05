@@ -13,194 +13,316 @@
 # limitations under the License.
 
 # make package for paddle fluid shared and static library
+set(PADDLE_INSTALL_DIR "${CMAKE_BINARY_DIR}/paddle_install_dir" CACHE STRING
+  "A path setting paddle shared and static libraries")
+
+set(PADDLE_INFERENCE_INSTALL_DIR "${CMAKE_BINARY_DIR}/paddle_inference_install_dir" CACHE STRING
+  "A path setting paddle inference shared and static libraries")
+  
+# At present, the size of static lib in Windows is very large,
+# so we need to crop the library size.
+if(WIN32)
+    #todo: remove the option 
+    option(WITH_STATIC_LIB "Compile demo with static/shared library, default use dynamic."   OFF)
+    if(NOT PYTHON_EXECUTABLE)
+        FIND_PACKAGE(PythonInterp REQUIRED)
+    endif()
+endif()
+
+set(COPY_SCRIPT_DIR ${PADDLE_SOURCE_DIR}/cmake)
 function(copy TARGET)
     set(options "")
     set(oneValueArgs "")
-    set(multiValueArgs SRCS DSTS DEPS)
+    set(multiValueArgs SRCS DSTS)
     cmake_parse_arguments(copy_lib "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
-    set(inference_lib_dist_dep ${TARGET} ${inference_lib_dist_dep} PARENT_SCOPE)
 
     list(LENGTH copy_lib_SRCS copy_lib_SRCS_len)
     list(LENGTH copy_lib_DSTS copy_lib_DSTS_len)
-    if(NOT ${copy_lib_SRCS_len} EQUAL ${copy_lib_DSTS_len})
+    if (NOT ${copy_lib_SRCS_len} EQUAL ${copy_lib_DSTS_len})
         message(FATAL_ERROR "${TARGET} source numbers are not equal to destination numbers")
-    endif()
+    endif ()
     math(EXPR len "${copy_lib_SRCS_len} - 1")
-
-    add_custom_target(${TARGET} DEPENDS ${copy_lib_DEPS})
-    foreach(index RANGE ${len})
+    foreach (index RANGE ${len})
         list(GET copy_lib_SRCS ${index} src)
         list(GET copy_lib_DSTS ${index} dst)
-        add_custom_command(TARGET ${TARGET} PRE_BUILD 
-          COMMAND mkdir -p "${dst}"
-          COMMAND cp -r "${src}" "${dst}"
-          COMMENT "copying ${src} -> ${dst}")
-    endforeach()
+        if (WIN32)   #windows
+            file(TO_NATIVE_PATH ${src} native_src)
+            file(TO_NATIVE_PATH ${dst} native_dst)
+            add_custom_command(TARGET ${TARGET} POST_BUILD
+                    COMMAND ${PYTHON_EXECUTABLE} ${COPY_SCRIPT_DIR}/copyfile.py ${native_src} ${native_dst})
+        else (WIN32) #not windows
+            add_custom_command(TARGET ${TARGET} POST_BUILD
+                    COMMAND mkdir -p "${dst}"
+                    COMMAND cp -r "${src}" "${dst}"
+                    COMMENT "copying ${src} -> ${dst}")
+        endif (WIN32) # not windows
+    endforeach ()
 endfunction()
 
-# third party
-set(dst_dir "${FLUID_INSTALL_DIR}/third_party/eigen3")
-copy(eigen3_lib
-  SRCS ${EIGEN_INCLUDE_DIR}/Eigen/Core ${EIGEN_INCLUDE_DIR}/Eigen/src ${EIGEN_INCLUDE_DIR}/unsupported/Eigen
-  DSTS ${dst_dir}/Eigen ${dst_dir}/Eigen ${dst_dir}/unsupported
-  DEPS eigen3
-)
+function(copy_part_of_thrid_party TARGET DST) 
+    if(${CBLAS_PROVIDER} STREQUAL MKLML)
+        set(dst_dir "${DST}/third_party/install/mklml")
+        if(WIN32)
+            copy(${TARGET}
+                    SRCS ${MKLML_LIB} ${MKLML_IOMP_LIB} ${MKLML_SHARED_LIB}
+                    ${MKLML_SHARED_IOMP_LIB} ${MKLML_INC_DIR}
+                    DSTS ${dst_dir}/lib ${dst_dir}/lib ${dst_dir}/lib
+                    ${dst_dir}/lib ${dst_dir})
+        else()
+            copy(${TARGET}
+                    SRCS ${MKLML_LIB} ${MKLML_IOMP_LIB} ${MKLML_INC_DIR}
+                    DSTS ${dst_dir}/lib ${dst_dir}/lib ${dst_dir})
+        endif()
+    elseif(${CBLAS_PROVIDER} STREQUAL EXTERN_OPENBLAS)
+        set(dst_dir "${DST}/third_party/install/openblas")
+	if(WIN32)
+            copy(${TARGET}
+                    SRCS ${CBLAS_INSTALL_DIR}/lib ${OPENBLAS_SHARED_LIB} ${CBLAS_INSTALL_DIR}/include
+                    DSTS ${dst_dir} ${dst_dir}/lib ${dst_dir})
+	else()
+            copy(${TARGET}
+                    SRCS ${CBLAS_INSTALL_DIR}/lib ${CBLAS_INSTALL_DIR}/include
+                    DSTS ${dst_dir} ${dst_dir})
+	endif()
+    endif()
 
-set(dst_dir "${FLUID_INSTALL_DIR}/third_party/install/gflags")
-copy(gflags_lib
-  SRCS ${GFLAGS_INCLUDE_DIR} ${GFLAGS_LIBRARIES}
-  DSTS ${dst_dir} ${dst_dir}/lib
-  DEPS gflags
-)
+    if(WITH_MKLDNN)
+        set(dst_dir "${DST}/third_party/install/mkldnn")
+        if(WIN32)
+            copy(${TARGET}
+                    SRCS ${MKLDNN_INC_DIR} ${MKLDNN_SHARED_LIB}  ${MKLDNN_LIB}
+                    DSTS ${dst_dir} ${dst_dir}/lib ${dst_dir}/lib)
+        else()
+            copy(${TARGET}
+                    SRCS ${MKLDNN_INC_DIR} ${MKLDNN_SHARED_LIB} ${MKLDNN_SHARED_LIB_1}
+                    DSTS ${dst_dir} ${dst_dir}/lib ${dst_dir}/lib)
+        endif()
+    endif()
 
-set(dst_dir "${FLUID_INSTALL_DIR}/third_party/install/glog")
-copy(glog_lib
-  SRCS ${GLOG_INCLUDE_DIR} ${GLOG_LIBRARIES}
-  DSTS ${dst_dir} ${dst_dir}/lib
-  DEPS glog
-)
+    set(dst_dir "${DST}/third_party/install/gflags")
+    copy(${TARGET}
+            SRCS ${GFLAGS_INCLUDE_DIR} ${GFLAGS_LIBRARIES}
+            DSTS ${dst_dir} ${dst_dir}/lib)
 
-set(dst_dir "${FLUID_INSTALL_DIR}/third_party/boost/")
-copy(boost_lib
-  SRCS ${BOOST_INCLUDE_DIR}/boost
-  DSTS ${dst_dir}
-  DEPS boost
-)
+    set(dst_dir "${DST}/third_party/install/glog")
+    copy(${TARGET}
+            SRCS ${GLOG_INCLUDE_DIR} ${GLOG_LIBRARIES}
+            DSTS ${dst_dir} ${dst_dir}/lib)
 
-if(NOT PROTOBUF_FOUND)
-    set(dst_dir "${FLUID_INSTALL_DIR}/third_party/install/protobuf")
-    copy(protobuf_lib
-      SRCS ${PROTOBUF_INCLUDE_DIR} ${PROTOBUF_LIBRARY}
-      DSTS ${dst_dir} ${dst_dir}/lib
-      DEPS extern_protobuf
-    )
-endif()
+    if (WITH_CRYPTO)
+        set(dst_dir "${DST}/third_party/install/cryptopp")
+        copy(${TARGET}
+            SRCS ${CRYPTOPP_INCLUDE_DIR} ${CRYPTOPP_LIBRARIES}
+            DSTS ${dst_dir} ${dst_dir}/lib)
+    endif()
 
-if(NOT CBLAS_FOUND)
-    set(dst_dir "${FLUID_INSTALL_DIR}/third_party/install/openblas")
-    copy(openblas_lib
-      SRCS ${CBLAS_INSTALL_DIR}/lib ${CBLAS_INSTALL_DIR}/include
-      DSTS ${dst_dir} ${dst_dir}
-      DEPS extern_openblas
-    )
-elseif (WITH_MKLML)
-    set(dst_dir "${FLUID_INSTALL_DIR}/third_party/install/mklml")
-    copy(mklml_lib
-      SRCS ${MKLML_LIB} ${MKLML_IOMP_LIB} ${MKLML_INC_DIR}
-      DSTS ${dst_dir}/lib ${dst_dir}/lib ${dst_dir}
-      DEPS mklml
-    )
-endif()
+    set(dst_dir "${DST}/third_party/install/xxhash")
+    copy(${TARGET}
+        SRCS ${XXHASH_INCLUDE_DIR} ${XXHASH_LIBRARIES}
+        DSTS ${dst_dir} ${dst_dir}/lib)    
 
-if(WITH_MKLDNN)
-  set(dst_dir "${FLUID_INSTALL_DIR}/third_party/install/mkldnn")
-  copy(mkldnn_lib
-    SRCS ${MKLDNN_INC_DIR} ${MKLDNN_SHARED_LIB}
-    DSTS ${dst_dir} ${dst_dir}/lib
-    DEPS mkldnn
-  )
-endif()
+    if (NOT PROTOBUF_FOUND OR WIN32)
+        set(dst_dir "${DST}/third_party/install/protobuf")
+        copy(${TARGET}
+                SRCS ${PROTOBUF_INCLUDE_DIR} ${PROTOBUF_LIBRARY}
+                DSTS ${dst_dir} ${dst_dir}/lib)
+    endif ()
 
-if (NOT WIN32)
-if(NOT MOBILE_INFERENCE AND NOT RPI)
-  set(dst_dir "${FLUID_INSTALL_DIR}/third_party/install/snappy")
-  copy(snappy_lib
-    SRCS ${SNAPPY_INCLUDE_DIR} ${SNAPPY_LIBRARIES}
-    DSTS ${dst_dir} ${dst_dir}/lib
-    DEPS snappy)
+    if (LITE_BINARY_DIR)
+        set(dst_dir "${DST}/third_party/install/lite")
+        copy(${TARGET}
+                SRCS ${LITE_BINARY_DIR}/${LITE_OUTPUT_BIN_DIR}/*
+                DSTS ${dst_dir})
+    endif()
+endfunction()
 
-  set(dst_dir "${FLUID_INSTALL_DIR}/third_party/install/snappystream")
-  copy(snappystream_lib
-    SRCS ${SNAPPYSTREAM_INCLUDE_DIR} ${SNAPPYSTREAM_LIBRARIES}
-    DSTS ${dst_dir} ${dst_dir}/lib
-    DEPS snappystream)
+# inference library for only inference
+set(inference_lib_deps third_party paddle_fluid paddle_fluid_c paddle_fluid_shared paddle_fluid_c_shared)
+add_custom_target(inference_lib_dist DEPENDS ${inference_lib_deps})
 
-  set(dst_dir "${FLUID_INSTALL_DIR}/third_party/install/zlib")
-  copy(zlib_lib
-    SRCS ${ZLIB_INCLUDE_DIR} ${ZLIB_LIBRARIES}
-    DSTS ${dst_dir} ${dst_dir}/lib
-    DEPS zlib)
-endif()
-endif(NOT WIN32)
 
-# paddle fluid module
-set(src_dir "${PADDLE_SOURCE_DIR}/paddle/fluid")
-set(dst_dir "${FLUID_INSTALL_DIR}/paddle/fluid")
-set(module "framework")
-if (NOT WIN32)
-copy(framework_lib DEPS framework_py_proto 
-  SRCS ${src_dir}/${module}/*.h ${src_dir}/${module}/details/*.h ${PADDLE_BINARY_DIR}/paddle/fluid/framework/framework.pb.h
-  DSTS ${dst_dir}/${module} ${dst_dir}/${module}/details ${dst_dir}/${module}
-)
-else()
-copy(framework_lib
-  SRCS ${src_dir}/${module}/*.h ${src_dir}/${module}/details/*.h ${PADDLE_BINARY_DIR}/paddle/fluid/framework/framework.pb.h
-  DSTS ${dst_dir}/${module} ${dst_dir}/${module}/details ${dst_dir}/${module}
-)
-endif(NOT WIN32)
+set(dst_dir "${PADDLE_INFERENCE_INSTALL_DIR}/third_party/threadpool")
+copy(inference_lib_dist
+        SRCS ${THREADPOOL_INCLUDE_DIR}/ThreadPool.h
+        DSTS ${dst_dir})
 
-set(module "memory")
-copy(memory_lib
-  SRCS ${src_dir}/${module}/*.h ${src_dir}/${module}/detail/*.h
-  DSTS ${dst_dir}/${module} ${dst_dir}/${module}/detail
-)
-
-set(inference_deps paddle_fluid_shared paddle_fluid)
-
-set(module "inference/api")
-if (WITH_ANAKIN AND WITH_GPU)
-    copy(anakin_inference_lib DEPS paddle_inference_api inference_anakin_api
-        SRCS
-        ${PADDLE_BINARY_DIR}/paddle/fluid/inference/api/libinference_anakin_api* # compiled anakin api
-        ${ANAKIN_INSTALL_DIR} # anakin release
-        DSTS ${dst_dir}/inference/anakin ${dst_dir}/inference/anakin)
-     list(APPEND inference_deps anakin_inference_lib)
-endif()
-
-set(module "inference")
-copy(inference_lib DEPS ${inference_deps}
-  SRCS ${src_dir}/${module}/*.h ${PADDLE_BINARY_DIR}/paddle/fluid/inference/libpaddle_fluid.*
-       ${src_dir}/${module}/api/paddle_inference_api.h ${src_dir}/${module}/api/demo_ci
-  DSTS ${dst_dir}/${module} ${dst_dir}/${module} ${dst_dir}/${module} ${dst_dir}/${module}
-)
-
-set(module "platform")
-copy(platform_lib DEPS profiler_py_proto
-  SRCS ${src_dir}/${module}/*.h ${src_dir}/${module}/dynload/*.h ${src_dir}/${module}/details/*.h
-  DSTS ${dst_dir}/${module} ${dst_dir}/${module}/dynload ${dst_dir}/${module}/details
-)
-
-set(module "string")
-copy(string_lib
-  SRCS ${src_dir}/${module}/*.h ${src_dir}/${module}/tinyformat/*.h
-  DSTS ${dst_dir}/${module} ${dst_dir}/${module}/tinyformat
-)
-
-set(module "pybind")
-copy(pybind_lib
-  SRCS ${CMAKE_CURRENT_BINARY_DIR}/paddle/fluid/${module}/pybind.h
-  DSTS ${dst_dir}/${module}
-)
+# Only GPU need cudaErrorMessage.pb
+IF(WITH_GPU)
+        set(dst_dir "${PADDLE_INFERENCE_INSTALL_DIR}/third_party/cudaerror/data")
+        copy(inference_lib_dist
+                SRCS ${cudaerror_INCLUDE_DIR}
+                DSTS ${dst_dir})
+ENDIF()
 
 # CMakeCache Info
-copy(cmake_cache
-  SRCS ${CMAKE_CURRENT_BINARY_DIR}/CMakeCache.txt
-  DSTS ${FLUID_INSTALL_DIR})
+copy(inference_lib_dist
+        SRCS ${CMAKE_CURRENT_BINARY_DIR}/CMakeCache.txt
+        DSTS ${PADDLE_INFERENCE_INSTALL_DIR})
 
-add_custom_target(inference_lib_dist DEPENDS ${inference_lib_dist_dep}) 
+copy_part_of_thrid_party(inference_lib_dist ${PADDLE_INFERENCE_INSTALL_DIR})
+
+set(src_dir "${PADDLE_SOURCE_DIR}/paddle/fluid")
+if(WIN32)
+    if(WITH_STATIC_LIB)
+        set(paddle_fluid_lib ${PADDLE_BINARY_DIR}/paddle/fluid/inference/${CMAKE_BUILD_TYPE}/libpaddle_fluid.lib
+                             ${PADDLE_BINARY_DIR}/paddle/fluid/inference/${CMAKE_BUILD_TYPE}/paddle_fluid.*)
+    else()
+        set(paddle_fluid_lib ${PADDLE_BINARY_DIR}/paddle/fluid/inference/${CMAKE_BUILD_TYPE}/paddle_fluid.dll
+                             ${PADDLE_BINARY_DIR}/paddle/fluid/inference/${CMAKE_BUILD_TYPE}/paddle_fluid.lib)
+    endif()
+    copy(inference_lib_dist
+            SRCS  ${src_dir}/inference/api/paddle_*.h ${paddle_fluid_lib}
+            DSTS  ${PADDLE_INFERENCE_INSTALL_DIR}/paddle/include ${PADDLE_INFERENCE_INSTALL_DIR}/paddle/lib
+            ${PADDLE_INFERENCE_INSTALL_DIR}/paddle/lib)
+else(WIN32)
+    set(paddle_fluid_lib ${PADDLE_BINARY_DIR}/paddle/fluid/inference/libpaddle_fluid.*)
+    copy(inference_lib_dist
+                SRCS  ${src_dir}/inference/api/paddle_*.h ${paddle_fluid_lib}
+                DSTS  ${PADDLE_INFERENCE_INSTALL_DIR}/paddle/include ${PADDLE_INFERENCE_INSTALL_DIR}/paddle/lib)
+endif(WIN32)
+
+copy(inference_lib_dist
+        SRCS  ${CMAKE_BINARY_DIR}/paddle/fluid/framework/framework.pb.h
+        DSTS  ${PADDLE_INFERENCE_INSTALL_DIR}/paddle/include/internal)
+copy(inference_lib_dist
+        SRCS  ${PADDLE_SOURCE_DIR}/paddle/fluid/framework/io/crypto/cipher.h
+        DSTS  ${PADDLE_INFERENCE_INSTALL_DIR}/paddle/include/crypto/)
+include_directories(${CMAKE_BINARY_DIR}/../paddle/fluid/framework/io)
+
+# CAPI inference library for only inference
+set(PADDLE_INFERENCE_C_INSTALL_DIR "${CMAKE_BINARY_DIR}/paddle_inference_c_install_dir" CACHE STRING
+"A path setting CAPI paddle inference shared")
+copy_part_of_thrid_party(inference_lib_dist ${PADDLE_INFERENCE_C_INSTALL_DIR})
+
+set(src_dir "${PADDLE_SOURCE_DIR}/paddle/fluid")
+if(WIN32)
+  set(paddle_fluid_c_lib ${PADDLE_BINARY_DIR}/paddle/fluid/inference/capi/${CMAKE_BUILD_TYPE}/paddle_fluid_c.*)
+else(WIN32)
+  set(paddle_fluid_c_lib ${PADDLE_BINARY_DIR}/paddle/fluid/inference/capi/libpaddle_fluid_c.*)
+endif(WIN32)
+
+copy(inference_lib_dist
+      SRCS  ${src_dir}/inference/capi/paddle_c_api.h  ${paddle_fluid_c_lib}
+      DSTS  ${PADDLE_INFERENCE_C_INSTALL_DIR}/paddle/include ${PADDLE_INFERENCE_C_INSTALL_DIR}/paddle/lib)
+
+# fluid library for both train and inference
+set(fluid_lib_deps inference_lib_dist)
+add_custom_target(fluid_lib_dist ALL DEPENDS ${fluid_lib_deps})
+
+set(dst_dir "${PADDLE_INSTALL_DIR}/paddle/fluid")
+set(module "inference")
+if(WIN32)
+        copy(fluid_lib_dist
+                SRCS ${src_dir}/${module}/*.h ${src_dir}/${module}/api/paddle_*.h ${paddle_fluid_lib}
+                DSTS ${dst_dir}/${module} ${dst_dir}/${module} ${dst_dir}/${module} ${dst_dir}/${module}
+                )
+        else()
+        copy(fluid_lib_dist
+                SRCS ${src_dir}/${module}/*.h ${src_dir}/${module}/api/paddle_*.h ${paddle_fluid_lib}
+                DSTS ${dst_dir}/${module} ${dst_dir}/${module} ${dst_dir}/${module} 
+                )
+endif()
+
+set(module "framework")
+set(framework_lib_deps framework_proto data_feed_proto trainer_desc_proto)
+add_dependencies(fluid_lib_dist ${framework_lib_deps})
+copy(fluid_lib_dist
+        SRCS ${src_dir}/${module}/*.h ${src_dir}/${module}/details/*.h ${PADDLE_BINARY_DIR}/paddle/fluid/framework/trainer_desc.pb.h ${PADDLE_BINARY_DIR}/paddle/fluid/framework/framework.pb.h ${PADDLE_BINARY_DIR}/paddle/fluid/framework/data_feed.pb.h ${src_dir}/${module}/ir/memory_optimize_pass/*.h
+        ${src_dir}/${module}/ir/*.h ${src_dir}/${module}/fleet/*.h
+        DSTS ${dst_dir}/${module} ${dst_dir}/${module}/details ${dst_dir}/${module} ${dst_dir}/${module} ${dst_dir}/${module} ${dst_dir}/${module}/ir/memory_optimize_pass ${dst_dir}/${module}/ir ${dst_dir}/${module}/fleet)
+
+set(module "operators")
+copy(fluid_lib_dist
+        SRCS ${src_dir}/${module}/reader/blocking_queue.h
+        DSTS ${dst_dir}/${module}/reader/
+        )
+
+set(module "memory")
+copy(fluid_lib_dist
+        SRCS ${src_dir}/${module}/*.h ${src_dir}/${module}/detail/*.h ${src_dir}/${module}/allocation/*.h
+        DSTS ${dst_dir}/${module} ${dst_dir}/${module}/detail ${dst_dir}/${module}/allocation
+        )
+
+set(module "platform")
+set(platform_lib_deps profiler_proto error_codes_proto)
+if(WITH_GPU)
+  set(platform_lib_deps ${platform_lib_deps} cuda_error_proto)
+endif(WITH_GPU)
+
+add_dependencies(fluid_lib_dist ${platform_lib_deps})
+copy(fluid_lib_dist
+        SRCS ${src_dir}/${module}/*.h ${src_dir}/${module}/dynload/*.h ${src_dir}/${module}/details/*.h ${PADDLE_BINARY_DIR}/paddle/fluid/platform/*.pb.h
+        DSTS ${dst_dir}/${module} ${dst_dir}/${module}/dynload ${dst_dir}/${module}/details ${dst_dir}/${module}
+        )
+
+set(module "string")
+copy(fluid_lib_dist
+        SRCS ${src_dir}/${module}/*.h ${src_dir}/${module}/tinyformat/*.h
+        DSTS ${dst_dir}/${module} ${dst_dir}/${module}/tinyformat
+        )
+
+set(module "imperative")
+copy(fluid_lib_dist
+        SRCS ${src_dir}/${module}/*.h ${src_dir}/${module}/jit/*.h 
+        DSTS ${dst_dir}/${module} ${dst_dir}/${module}/jit
+        )
+
+set(module "pybind")
+copy(fluid_lib_dist
+        SRCS ${CMAKE_CURRENT_BINARY_DIR}/paddle/fluid/${module}/pybind.h
+        DSTS ${dst_dir}/${module}
+        )
+
+set(dst_dir "${PADDLE_INSTALL_DIR}/third_party/eigen3")
+copy(inference_lib_dist
+        SRCS ${EIGEN_INCLUDE_DIR}/Eigen/Core ${EIGEN_INCLUDE_DIR}/Eigen/src ${EIGEN_INCLUDE_DIR}/unsupported/Eigen
+        DSTS ${dst_dir}/Eigen ${dst_dir}/Eigen ${dst_dir}/unsupported)
+
+set(dst_dir "${PADDLE_INSTALL_DIR}/third_party/boost")
+copy(inference_lib_dist
+        SRCS ${BOOST_INCLUDE_DIR}/boost
+        DSTS ${dst_dir})
+
+set(dst_dir "${PADDLE_INSTALL_DIR}/third_party/dlpack")
+copy(inference_lib_dist
+        SRCS ${DLPACK_INCLUDE_DIR}/dlpack
+        DSTS ${dst_dir})
+
+set(dst_dir "${PADDLE_INSTALL_DIR}/third_party/install/zlib")
+copy(inference_lib_dist
+        SRCS ${ZLIB_INCLUDE_DIR} ${ZLIB_LIBRARIES}
+        DSTS ${dst_dir} ${dst_dir}/lib)
+
+
+# CMakeCache Info
+copy(fluid_lib_dist
+        SRCS ${PADDLE_INFERENCE_INSTALL_DIR}/third_party ${CMAKE_CURRENT_BINARY_DIR}/CMakeCache.txt
+        DSTS ${PADDLE_INSTALL_DIR} ${PADDLE_INSTALL_DIR}
+        )
 
 # paddle fluid version
-execute_process(
-  COMMAND ${GIT_EXECUTABLE} log --pretty=format:%H -1
-  WORKING_DIRECTORY ${PADDLE_SOURCE_DIR}
-  OUTPUT_VARIABLE PADDLE_GIT_COMMIT)
-set(version_file ${FLUID_INSTALL_DIR}/version.txt)
-file(WRITE ${version_file}
-  "GIT COMMIT ID: ${PADDLE_GIT_COMMIT}\n"
-  "WITH_MKL: ${WITH_MKL}\n"
-  "WITH_GPU: ${WITH_GPU}\n")
-if(WITH_GPU)
-  file(APPEND ${version_file}
-    "CUDA version: ${CUDA_VERSION}\n"
-    "CUDNN version: v${CUDNN_MAJOR_VERSION}\n")
-endif()
+function(version version_file)
+    execute_process(
+            COMMAND ${GIT_EXECUTABLE} log --pretty=format:%H -1
+            WORKING_DIRECTORY ${PADDLE_SOURCE_DIR}
+            OUTPUT_VARIABLE PADDLE_GIT_COMMIT)
+    file(WRITE ${version_file}
+            "GIT COMMIT ID: ${PADDLE_GIT_COMMIT}\n"
+            "WITH_MKL: ${WITH_MKL}\n"
+            "WITH_MKLDNN: ${WITH_MKLDNN}\n"
+            "WITH_GPU: ${WITH_GPU}\n")
+    if(WITH_GPU)
+        file(APPEND ${version_file}
+                "CUDA version: ${CUDA_VERSION}\n"
+                "CUDNN version: v${CUDNN_MAJOR_VERSION}.${CUDNN_MINOR_VERSION}\n")
+    endif()
+    file(APPEND ${version_file} "CXX compiler version: ${CMAKE_CXX_COMPILER_VERSION}\n")
+    if(TENSORRT_FOUND)
+        file(APPEND ${version_file}
+                "WITH_TENSORRT: ${TENSORRT_FOUND}\n" "TensorRT version: v${TENSORRT_MAJOR_VERSION}\n")
+    endif()
+    
+endfunction()
+version(${PADDLE_INSTALL_DIR}/version.txt)
+version(${PADDLE_INFERENCE_INSTALL_DIR}/version.txt)
+version(${PADDLE_INFERENCE_C_INSTALL_DIR}/version.txt)

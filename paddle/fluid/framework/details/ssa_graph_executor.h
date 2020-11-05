@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "paddle/fluid/framework/details/fetch_op_handle.h"
 #include "paddle/fluid/framework/feed_fetch_type.h"
 #include "paddle/fluid/framework/ir/graph.h"
 
@@ -34,8 +35,11 @@ class SSAGraphExecutor {
 
   virtual const ir::Graph& Graph() const = 0;
 
-  virtual FeedFetchList Run(const std::vector<std::string>& fetch_tensors) = 0;
+  virtual FetchResultType Run(const std::vector<std::string>& fetch_tensors,
+                              bool return_merged = true) = 0;
 };
+
+void ClearFetchOp(ir::Graph* graph, std::vector<OpHandleBase*>* fetch_ops);
 }  // namespace details
 }  // namespace framework
 }  // namespace paddle

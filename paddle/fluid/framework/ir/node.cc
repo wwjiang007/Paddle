@@ -17,7 +17,26 @@ limitations under the License. */
 namespace paddle {
 namespace framework {
 namespace ir {
+// msvc15 don't support constexpr in correct way.
+#if !defined(_WIN32)
 constexpr char Node::kControlDepVarName[];
+#else
+const char Node::kControlDepVarName[] = "__control_var";
+#endif
+
+std::unique_ptr<Node> CreateNodeForTest(const std::string &name,
+                                        Node::Type type) {
+  return std::unique_ptr<Node>(new Node(name, type));
+}
+
+std::unique_ptr<Node> CreateNodeForTest(VarDesc *var_desc) {
+  return std::unique_ptr<Node>(new Node(var_desc));
+}
+
+std::unique_ptr<Node> CreateNodeForTest(OpDesc *op_desc) {
+  return std::unique_ptr<Node>(new Node(op_desc));
+}
+
 }  // namespace ir
 }  // namespace framework
 }  // namespace paddle

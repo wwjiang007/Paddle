@@ -25,6 +25,8 @@ import paddle
 import paddle.dataset.conll05 as conll05
 import paddle.fluid as fluid
 
+paddle.enable_static()
+
 word_dict, verb_dict, label_dict = conll05.get_dict()
 word_dict_len = len(word_dict)
 label_dict_len = len(label_dict)
@@ -38,7 +40,7 @@ depth = 8
 mix_hidden_lr = 1e-3
 
 IS_SPARSE = True
-PASS_NUM = 10
+PASS_NUM = 2
 BATCH_SIZE = 10
 
 embedding_name = 'emb'
@@ -196,7 +198,7 @@ def train(use_cuda, save_dirname=None, is_local=True):
                         print("second per batch: " + str((time.time(
                         ) - start_time) / batch_id))
                     # Set the threshold low to speed up the CI test
-                    if float(cost) < 60.0:
+                    if float(cost) < 80.0:
                         if save_dirname is not None:
                             # TODO(liuyiqun): Change the target to crf_decode
                             fluid.io.save_inference_model(save_dirname, [
@@ -207,6 +209,10 @@ def train(use_cuda, save_dirname=None, is_local=True):
                         return
 
                 batch_id = batch_id + 1
+
+        raise RuntimeError(
+            "This model should save_inference_model and return, but not reach here, please check!"
+        )
 
     if is_local:
         train_loop(fluid.default_main_program())
@@ -243,7 +249,7 @@ def infer(use_cuda, save_dirname=None):
     inference_scope = fluid.core.Scope()
     with fluid.scope_guard(inference_scope):
         # Use fluid.io.load_inference_model to obtain the inference program desc,
-        # the feed_target_names (the names of variables that will be feeded
+        # the feed_target_names (the names of variables that will be fed
         # data using feed operators), and the fetch_targets (variables that
         # we want to obtain data from using fetch operators).
         [inference_program, feed_target_names,

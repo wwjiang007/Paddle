@@ -41,8 +41,9 @@ void VarDesc::SetTensorDescNum(size_t num) {
     } break;
     default:
       PADDLE_THROW(
-          "Setting 'sub_tensor_number' is not supported by the type of var %s.",
-          this->Name());
+          platform::errors::Unavailable("Setting 'sub_tensor_number' is not "
+                                        "supported by the %s type variable.",
+                                        this->Name()));
   }
 }
 
@@ -53,8 +54,9 @@ size_t VarDesc::GetTensorDescNum() const {
       break;
     default:
       PADDLE_THROW(
-          "Getting 'sub_tensor_number' is not supported by the type of var %s.",
-          this->Name());
+          platform::errors::Unavailable("Getting 'sub_tensor_number' is not "
+                                        "supported by the %s type variable.",
+                                        this->Name()));
   }
 }
 
@@ -88,13 +90,7 @@ std::vector<std::vector<int64_t>> VarDesc::GetShapes() const {
 }
 
 void VarDesc::SetDataType(proto::VarType::Type data_type) {
-  switch (desc_.type().type()) {
-    case proto::VarType::CHANNEL:
-      mutable_channel_desc()->set_data_type(data_type);
-      break;
-    default:
-      mutable_tensor_desc()->set_data_type(data_type);
-  }
+  mutable_tensor_desc()->set_data_type(data_type);
 }
 
 void VarDesc::SetDataTypes(
@@ -115,13 +111,7 @@ void VarDesc::SetDataTypes(
 }
 
 proto::VarType::Type VarDesc::GetDataType() const {
-  switch (desc_.type().type()) {
-    case proto::VarType::CHANNEL:
-      return channel_desc().data_type();
-      break;
-    default:
-      return tensor_desc().data_type();
-  }
+  return tensor_desc().data_type();
 }
 
 std::vector<proto::VarType::Type> VarDesc::GetDataTypes() const {
@@ -134,17 +124,6 @@ std::vector<proto::VarType::Type> VarDesc::GetDataTypes() const {
   return res;
 }
 
-void VarDesc::SetCapacity(int64_t capacity) {
-  switch (desc_.type().type()) {
-    case proto::VarType::CHANNEL:
-      desc_.mutable_type()->mutable_channel()->set_capacity(capacity);
-      break;
-    default:
-      PADDLE_THROW("Setting 'capacity' is not supported by the type of var %s.",
-                   this->Name());
-  }
-}
-
 void VarDesc::SetLoDLevel(int32_t lod_level) {
   switch (desc_.type().type()) {
     case proto::VarType::LOD_TENSOR:
@@ -154,9 +133,9 @@ void VarDesc::SetLoDLevel(int32_t lod_level) {
       desc_.mutable_type()->mutable_tensor_array()->set_lod_level(lod_level);
       break;
     default:
-      PADDLE_THROW(
-          "Setting 'lod_level' is not supported by the type of var %s.",
-          this->Name());
+      PADDLE_THROW(platform::errors::Unavailable(
+          "Setting 'lod_level' is not supported by the %s type variable.",
+          this->Name()));
   }
 }
 
@@ -178,9 +157,9 @@ void VarDesc::SetLoDLevels(const std::vector<int32_t> &multiple_lod_level) {
       }
     } break;
     default:
-      PADDLE_THROW(
-          "Setting 'lod_levels' is not supported by the type of var %s.",
-          this->Name());
+      PADDLE_THROW(platform::errors::Unavailable(
+          "Setting 'lod_levels' is not supported by the %s type variable",
+          this->Name()));
   }
 }
 
@@ -191,9 +170,9 @@ int32_t VarDesc::GetLoDLevel() const {
     case proto::VarType::LOD_TENSOR_ARRAY:
       return desc_.type().tensor_array().lod_level();
     default:
-      PADDLE_THROW(
-          "Getting 'lod_level' is not supported by the type of var %s.",
-          this->Name());
+      PADDLE_THROW(platform::errors::Unavailable(
+          "Getting 'lod_level' is not supported by the %s type variable.",
+          this->Name()));
   }
 }
 
@@ -208,28 +187,19 @@ std::vector<int32_t> VarDesc::GetLoDLevels() const {
       return res;
       break;
     default:
-      PADDLE_THROW(
-          "Getting 'lod_levels' is not supported by the type of var %s.",
-          this->Name());
-  }
-}
-
-const proto::VarType::ChannelDesc &VarDesc::channel_desc() const {
-  PADDLE_ENFORCE(desc_.has_type(), "The var's type hasn't been set.");
-  PADDLE_ENFORCE(desc_.type().has_type(), "The var type hasn't been set.");
-  switch (desc_.type().type()) {
-    case proto::VarType::CHANNEL:
-      return desc_.type().channel();
-    default:
-      PADDLE_THROW(
-          "Getting 'channel_desc' is not supported by the type of var %s.",
-          this->Name());
+      PADDLE_THROW(platform::errors::Unavailable(
+          "Getting 'lod_levels' is not supported by the %s type variable.",
+          this->Name()));
   }
 }
 
 const proto::VarType::TensorDesc &VarDesc::tensor_desc() const {
-  PADDLE_ENFORCE(desc_.has_type(), "The var's type hasn't been set.");
-  PADDLE_ENFORCE(desc_.type().has_type(), "The var type hasn't been set.");
+  PADDLE_ENFORCE_EQ(
+      desc_.has_type(), true,
+      platform::errors::NotFound("The variable's type was not be set."));
+  PADDLE_ENFORCE_EQ(
+      desc_.type().has_type(), true,
+      platform::errors::NotFound("The variable's type was not be set."));
   switch (desc_.type().type()) {
     case proto::VarType::SELECTED_ROWS:
       return desc_.type().selected_rows();
@@ -238,14 +208,16 @@ const proto::VarType::TensorDesc &VarDesc::tensor_desc() const {
     case proto::VarType::LOD_TENSOR_ARRAY:
       return desc_.type().tensor_array().tensor();
     default:
-      PADDLE_THROW(
-          "Getting 'tensor_desc' is not supported by the type of var %s.",
-          this->Name());
+      PADDLE_THROW(platform::errors::Unavailable(
+          "Getting 'tensor_desc' is not supported by the %s type variable.",
+          this->Name()));
   }
 }
 
 std::vector<proto::VarType::TensorDesc> VarDesc::tensor_descs() const {
-  PADDLE_ENFORCE(desc_.has_type(), "The var type hasn't been set.");
+  PADDLE_ENFORCE_EQ(
+      desc_.has_type(), true,
+      platform::errors::NotFound("The variable's type was not be set."));
   std::vector<proto::VarType::TensorDesc> res;
   res.reserve(GetTensorDescNum());
   switch (desc_.type().type()) {
@@ -255,30 +227,19 @@ std::vector<proto::VarType::TensorDesc> VarDesc::tensor_descs() const {
       }
       return res;
     default:
-      PADDLE_THROW(
-          "Getting 'tensor_descs' is not supported by the type of var "
-          "%s.",
-          this->Name());
-  }
-}
-
-proto::VarType::ChannelDesc *VarDesc::mutable_channel_desc() {
-  PADDLE_ENFORCE(desc_.has_type(), "The var type hasn't been set.");
-  PADDLE_ENFORCE(desc_.type().has_type(), "The var type hasn't been set.");
-  switch (desc_.type().type()) {
-    case proto::VarType::CHANNEL:
-      return desc_.mutable_type()->mutable_channel();
-    default:
-      PADDLE_THROW(
-          "Getting 'mutable_channel_desc' is not supported by the type of var "
-          "%s.",
-          this->Name());
+      PADDLE_THROW(platform::errors::Unavailable(
+          "Getting 'tensor_descs' is not supported by the %s type variable.",
+          this->Name()));
   }
 }
 
 proto::VarType::TensorDesc *VarDesc::mutable_tensor_desc() {
-  PADDLE_ENFORCE(desc_.has_type(), "The var type hasn't been set.");
-  PADDLE_ENFORCE(desc_.type().has_type(), "The var type hasn't been set.");
+  PADDLE_ENFORCE_EQ(
+      desc_.has_type(), true,
+      platform::errors::NotFound("The variable's type was not be set."));
+  PADDLE_ENFORCE_EQ(
+      desc_.type().has_type(), true,
+      platform::errors::NotFound("The variable's type was not be set."));
   switch (desc_.type().type()) {
     case proto::VarType::SELECTED_ROWS:
       return desc_.mutable_type()->mutable_selected_rows();
@@ -288,15 +249,19 @@ proto::VarType::TensorDesc *VarDesc::mutable_tensor_desc() {
       return desc_.mutable_type()->mutable_tensor_array()->mutable_tensor();
     default:
       PADDLE_THROW(
-          "Getting 'mutable_tensor_desc' is not supported by the type of var "
-          "%s.",
-          this->Name());
+          platform::errors::Unavailable("Getting 'mutable_tensor_desc' is not "
+                                        "supported by the %s type variable.",
+                                        this->Name()));
   }
 }
 
 std::vector<proto::VarType::TensorDesc *> VarDesc::mutable_tensor_descs() {
-  PADDLE_ENFORCE(desc_.has_type(), "The var type hasn't been set.");
-  PADDLE_ENFORCE(desc_.type().has_type(), "The var type hasn't been set.");
+  PADDLE_ENFORCE_EQ(
+      desc_.has_type(), true,
+      platform::errors::NotFound("The variable's type was not be set."));
+  PADDLE_ENFORCE_EQ(
+      desc_.type().has_type(), true,
+      platform::errors::NotFound("The variable's type was not be set."));
   std::vector<proto::VarType::TensorDesc *> res;
   res.reserve(GetTensorDescNum());
   switch (desc_.type().type()) {
@@ -307,11 +272,15 @@ std::vector<proto::VarType::TensorDesc *> VarDesc::mutable_tensor_descs() {
       }
       return res;
     default:
-      PADDLE_THROW(
-          "Getting 'tensor_descs' is not supported by the type of var "
-          "%s.",
-          this->Name());
+      PADDLE_THROW(platform::errors::Unavailable(
+          "Getting 'tensor_descs' is not supported by the %s type variable.",
+          this->Name()));
   }
+}
+
+bool operator==(const VarDesc &left, const VarDesc &right) {
+  return left.Proto()->SerializeAsString() ==
+         right.Proto()->SerializeAsString();
 }
 
 }  // namespace framework

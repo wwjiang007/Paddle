@@ -81,10 +81,7 @@ class ProtoEncodeHelper {
   ProtoEncodeHelper(char* buf, int max_size)
       : base_(buf), p_(buf), limit_(base_ + max_size) {}
 
-  ~ProtoEncodeHelper() {
-    // Make sure callers didn't do operations that went over max_size promised
-    PADDLE_ENFORCE_LE(p_, limit_);
-  }
+  ~ProtoEncodeHelper() {}
 
   const char* data() const { return base_; }
   size_t size() const { return p_ - base_; }

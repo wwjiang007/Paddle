@@ -17,7 +17,26 @@ from __future__ import print_function
 import math
 import unittest
 import numpy as np
+import paddle.fluid as fluid
 from op_test import OpTest
+from paddle import fluid
+from paddle.fluid.layers import gru_unit
+from paddle.fluid.framework import program_guard, Program
+
+
+class TestGRUUnitAPIError(unittest.TestCase):
+    def test_errors(self):
+        with fluid.program_guard(fluid.Program(), fluid.Program()):
+            D = 5
+            layer = fluid.dygraph.nn.GRUUnit(size=D * 3)
+            # the input must be Variable.
+            x0 = fluid.create_lod_tensor(
+                np.array([-1, 3, 5, 5]), [[1, 1, 1, 1]], fluid.CPUPlace())
+            self.assertRaises(TypeError, layer, x0)
+            # the input dtype must be float32 or float64
+            x = fluid.data(name='x', shape=[-1, D * 3], dtype='float16')
+            hidden = fluid.data(name='hidden', shape=[-1, D], dtype='float32')
+            self.assertRaises(TypeError, layer, x, hidden)
 
 
 class GRUActivationType(OpTest):
@@ -43,9 +62,52 @@ def relu(x):
     return np.maximum(x, 0)
 
 
+class TestGRUUnitOpError(unittest.TestCase):
+    def test_errors(self):
+        with program_guard(Program(), Program()):
+            batch_size = 5
+            hidden_dim = 40
+            input = fluid.data(
+                name='input', shape=[None, hidden_dim * 3], dtype='float32')
+            pre_hidden = fluid.data(
+                name='pre_hidden', shape=[None, hidden_dim], dtype='float32')
+            np_input = np.random.uniform(
+                -0.1, 0.1, (batch_size, hidden_dim * 3)).astype('float64')
+            np_pre_hidden = np.random.uniform(
+                -0.1, 0.1, (batch_size, hidden_dim)).astype('float64')
+
+            def test_input_Variable():
+                gru_unit(np_input, pre_hidden, hidden_dim * 3)
+
+            self.assertRaises(TypeError, test_input_Variable)
+
+            def test_pre_hidden_Variable():
+                gru_unit(input, np_pre_hidden, hidden_dim * 3)
+
+            self.assertRaises(TypeError, test_pre_hidden_Variable)
+
+            def test_input_type():
+                error_input = fluid.data(
+                    name='error_input',
+                    shape=[None, hidden_dim * 3],
+                    dtype='int32')
+                gru_unit(error_input, pre_hidden, hidden_dim * 3)
+
+            self.assertRaises(TypeError, test_input_type)
+
+            def test_pre_hidden_type():
+                error_pre_hidden = fluid.data(
+                    name='error_pre_hidden',
+                    shape=[None, hidden_dim],
+                    dtype='int32')
+                gru_unit(input, error_pre_hidden, hidden_dim * 3)
+
+            self.assertRaises(TypeError, test_pre_hidden_type)
+
+
 class TestGRUUnitOp(OpTest):
     batch_size = 5
-    frame_size = 10
+    frame_size = 40
     activate = {
         GRUActivationType.identity: identity,
         GRUActivationType.sigmoid: sigmoid,
@@ -53,7 +115,7 @@ class TestGRUUnitOp(OpTest):
         GRUActivationType.relu: relu,
     }
 
-    def set_inputs(self):
+    def set_inputs(self, origin_mode=False):
         batch_size = self.batch_size
         frame_size = self.frame_size
         self.op_type = 'gru_unit'
@@ -68,10 +130,11 @@ class TestGRUUnitOp(OpTest):
         }
         self.attrs = {
             'activation': GRUActivationType.tanh,
-            'gate_activation': GRUActivationType.sigmoid
+            'gate_activation': GRUActivationType.sigmoid,
+            'origin_mode': origin_mode
         }
 
-    def set_outputs(self):
+    def set_outputs(self, origin_mode=False):
         # GRU calculations
         batch_size = self.batch_size
         frame_size = self.frame_size
@@ -93,7 +156,10 @@ class TestGRUUnitOp(OpTest):
         c = self.activate[self.attrs['activation']](np.dot(r_h_p, w_c) +
                                                     g[:, frame_size * 2:])
         g = np.hstack((u_r, c))
-        h = u * c + (1 - u) * h_p
+        if origin_mode:
+            h = (1 - u) * c + u * h_p
+        else:
+            h = u * c + (1 - u) * h_p
         self.outputs = {
             'Gate': g.astype('float64'),
             'ResetHiddenPrev': r_h_p.astype('float64'),
@@ -111,8 +177,14 @@ class TestGRUUnitOp(OpTest):
         self.check_grad(['Input', 'HiddenPrev', 'Weight'], ['Hidden'])
 
 
+class TestGRUUnitOpOriginMode(TestGRUUnitOp):
+    def setUp(self):
+        self.set_inputs(origin_mode=True)
+        self.set_outputs(origin_mode=True)
+
+
 class TestGRUUnitOpWithBias(TestGRUUnitOp):
-    def set_inputs(self):
+    def set_inputs(self, origin_mode=False):
         batch_size = self.batch_size
         frame_size = self.frame_size
         super(TestGRUUnitOpWithBias, self).set_inputs()
@@ -120,7 +192,8 @@ class TestGRUUnitOpWithBias(TestGRUUnitOp):
             -0.1, 0.1, (1, frame_size * 3)).astype('float64')
         self.attrs = {
             'activation': GRUActivationType.identity,
-            'gate_activation': GRUActivationType.sigmoid
+            'gate_activation': GRUActivationType.sigmoid,
+            'origin_mode': origin_mode
         }
 
     def test_check_grad(self):
@@ -130,6 +203,12 @@ class TestGRUUnitOpWithBias(TestGRUUnitOp):
         self.check_grad(
             ['HiddenPrev', 'Weight', 'Bias'], ['Hidden'],
             no_grad_set=set('Input'))
+
+
+class TestGRUUnitOpWithBiasOriginMode(TestGRUUnitOpWithBias):
+    def setUp(self):
+        self.set_inputs(origin_mode=True)
+        self.set_outputs(origin_mode=True)
 
 
 if __name__ == '__main__':

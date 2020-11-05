@@ -32,9 +32,9 @@ __global__ void PolygonBoxTransformKernel(const int n, const int h, const int w,
   if (id_n < n && id_h < h && id_w < w) {
     int id = id_n * h * w + w * id_h + id_w;
     if (id_n % 2 == 0) {
-      output[id] = id_w - input[id];
+      output[id] = id_w * 4 - input[id];
     } else {
-      output[id] = id_h - input[id];
+      output[id] = id_h * 4 - input[id];
     }
   }
 }
@@ -43,8 +43,9 @@ template <typename T>
 class PolygonBoxTransformOpCUDAKernel : public framework::OpKernel<T> {
  public:
   void Compute(const framework::ExecutionContext& ctx) const override {
-    PADDLE_ENFORCE(platform::is_gpu_place(ctx.GetPlace()),
-                   "It must use CUDAPlace.");
+    PADDLE_ENFORCE_EQ(
+        platform::is_gpu_place(ctx.GetPlace()), true,
+        platform::errors::InvalidArgument("It must use CUDAPlace."));
     auto* in = ctx.Input<Tensor>("Input");
     auto in_dims = in->dims();
     const T* in_data = in->data<T>();

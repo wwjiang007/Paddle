@@ -1,11 +1,8 @@
 /* Copyright (c) 2016 PaddlePaddle Authors. All Rights Reserved.
-
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
-
     http://www.apache.org/licenses/LICENSE-2.0
-
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -13,6 +10,9 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #pragma once
+#include <vector>
+
+#include "paddle/fluid/framework/tensor.h"
 #include "paddle/fluid/operators/detail/strided_memcpy.h"
 
 namespace paddle {
@@ -39,7 +39,7 @@ inline void StridedMemcpy(const platform::DeviceContext& dev_ctx, const T* src,
                           const framework::DDim& dst_stride, T* dst) {
   paddle::operators::detail::StridedCopyDimVisitor<T> func(
       dev_ctx, src, src_stride, dst_stride, dst);
-  boost::apply_visitor(func, dst_dim);
+  dst_dim.apply_visitor(func);
 }
 
 // Strided numel memory copy from src to dst by the specified axis
@@ -62,39 +62,74 @@ inline void StridedNumelCopyWithAxis(const platform::DeviceContext& ctx,
   auto place = ctx.GetPlace();
 
   PADDLE_ENFORCE_EQ(src_stride_numel.size(), dst_stride_numel.size(),
-                    "src and dst tensor should have the same dims size.");
+                    platform::errors::InvalidArgument(
+                        "Source and destination tensor should have the same "
+                        "dimension size, but source tensor dimension size is "
+                        "%u, destination tensor size is %u.",
+                        src_stride_numel.size(), dst_stride_numel.size()));
 
   for (int64_t i = 0; i < axis; ++i) {
     if (i < axis) {
-      PADDLE_ENFORCE_EQ(src_stride_numel[i] / src_stride_numel[axis],
-                        dst_stride_numel[i] / dst_stride_numel[axis],
-                        "src and dst should have the same elements "
-                        "except the specified axis.");
+      PADDLE_ENFORCE_EQ(
+          src_stride_numel[i] / src_stride_numel[axis],
+          dst_stride_numel[i] / dst_stride_numel[axis],
+          platform::errors::InvalidArgument(
+              "Source and destination tensor should have the same number of "
+              "elements except the specified axis, but the source elements "
+              "number is %d, destination elements number is %d.",
+              src_stride_numel[i] / src_stride_numel[axis],
+              dst_stride_numel[i] / dst_stride_numel[axis]));
     } else if (i == axis) {
       continue;
     } else {
-      PADDLE_ENFORCE_EQ(src_stride_numel[i], dst_stride_numel[i],
-                        "src and dst should have the same elements "
-                        "except the specified axis.");
+      PADDLE_ENFORCE_EQ(
+          src_stride_numel[i], dst_stride_numel[i],
+          platform::errors::InvalidArgument(
+              "Source and destination tensor should have the same number of "
+              "elements except the specified axis, but the source elements "
+              "number is %d, destination elements number is %d.",
+              src_stride_numel[i], dst_stride_numel[i]));
     }
   }
 
   for (int64_t i = 0; i < before; ++i) {
     if (platform::is_cpu_place(place)) {
-      auto& cpu_place = boost::get<platform::CPUPlace>(place);
+      auto& cpu_place = BOOST_GET_CONST(platform::CPUPlace, place);
       memory::Copy(cpu_place, dst + i * dst_after, cpu_place,
                    src + i * src_after, sizeof(T) * size);
     } else {
 #ifdef PADDLE_WITH_CUDA
-      auto& gpu_place = boost::get<platform::CUDAPlace>(place);
+      auto& gpu_place = BOOST_GET_CONST(platform::CUDAPlace, place);
       auto& cuda_ctx =
           reinterpret_cast<const platform::CUDADeviceContext&>(ctx);
       memory::Copy(gpu_place, dst + i * dst_after, gpu_place,
                    src + i * src_after, sizeof(T) * size, cuda_ctx.stream());
 #else
-      PADDLE_THROW("Paddle is not compiled with GPU");
+      PADDLE_THROW(platform::errors::PreconditionNotMet(
+          "Paddle is not compiled with GPU."));
 #endif
     }
+  }
+}
+
+template <typename T>
+inline void StridedMemcpyWithAxis0(
+    const platform::DeviceContext& dev_ctx, const framework::Tensor& input,
+    const std::vector<const framework::Tensor*>& shape_refer,
+    std::vector<framework::Tensor*>* outputs) {
+  const framework::DDim in_stride = stride_numel(input.dims());
+  const int axis = 0;
+  size_t input_offset = 0;
+
+  for (size_t i = 0; i < outputs->size(); ++i) {
+    auto out_stride = stride_numel(shape_refer[i]->dims());
+    auto out = outputs->at(i);
+    if (out != nullptr) {
+      StridedNumelCopyWithAxis<T>(dev_ctx, axis, out->data<T>(), out_stride,
+                                  input.data<T>() + input_offset, in_stride,
+                                  out_stride[axis]);
+    }
+    input_offset += out_stride[axis];
   }
 }
 

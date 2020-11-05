@@ -15,6 +15,9 @@
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <iostream>
+#ifdef _WIN32
+#include <numeric>
+#endif
 #include <random>
 
 #define PADDLE_CUDA_FP16
@@ -22,13 +25,14 @@
 #include "paddle/fluid/platform/cuda_primitives.h"
 #include "paddle/fluid/platform/float16.h"
 
+#include "paddle/fluid/platform/cuda_helper.h"
+
 using paddle::platform::PADDLE_CUDA_NUM_THREADS;
 using paddle::platform::float16;
 
 template <typename T>
 __global__ void AddKernel(const T* data_a, T* data_b, size_t num) {
-  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < num;
-       i += blockDim.x * gridDim.x) {
+  CUDA_KERNEL_LOOP(i, num) {
     paddle::platform::CudaAtomicAdd(&data_b[i], data_a[i]);
   }
 }
@@ -93,7 +97,7 @@ TEST(CudaAtomic, float16) {
 
 // unalignment of uint8
 void TestUnalign(size_t num, const int shift_bit) {
-  PADDLE_ENFORCE(num % 2 == 0, "must be a multiple of 2");
+  ASSERT_EQ(num % 2, 0);
   float16 *in1, *in2, *out;
   float16 *d_in1, *d_in2;
   size_t size = sizeof(uint8_t) * (num + shift_bit);
@@ -188,10 +192,7 @@ __forceinline__ __device__ T BlockReduce(T val) {
 template <typename T>
 __global__ void DeviceReduceSum(T* in, T* out, size_t N) {
   T sum(0);
-  for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < N;
-       i += blockDim.x * gridDim.x) {
-    sum += in[i];
-  }
+  CUDA_KERNEL_LOOP(i, N) { sum += in[i]; }
   sum = BlockReduce<T>(sum);
   __syncthreads();
   if (threadIdx.x == 0) out[blockIdx.x] = sum;

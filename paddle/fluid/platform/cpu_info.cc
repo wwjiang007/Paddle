@@ -15,43 +15,39 @@ limitations under the License. */
 #include "paddle/fluid/platform/cpu_info.h"
 
 #ifdef PADDLE_WITH_XBYAK
-#include "xbyak/xbyak.h"
 #include "xbyak/xbyak_util.h"
 #endif
 
 #ifdef __APPLE__
 #include <sys/sysctl.h>
 #include <sys/types.h>
+#elif defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX  // msvc max/min macro conflict with std::min/max
+#endif
+#include <windows.h>
 #else
 #include <unistd.h>
-#endif
+#endif  // _WIN32
 
 #include <algorithm>
 #include "gflags/gflags.h"
 
-DEFINE_double(fraction_of_cpu_memory_to_use, 1,
-              "Default use 100% of CPU memory for PaddlePaddle,"
-              "reserve the rest for page tables, etc");
+DECLARE_double(fraction_of_cpu_memory_to_use);
+DECLARE_uint64(initial_cpu_memory_in_mb);
+DECLARE_double(fraction_of_cuda_pinned_memory_to_use);
 
-DEFINE_uint64(initial_cpu_memory_in_mb,
-#ifdef PADDLE_WITH_MKLDNN
-              /* Aligned with mozga-intel, MKLDNN need at least 5000 MB
-               * to obtain the best performance*/
-              5000,
-#else
-              500,
-#endif
-              "Initial CPU memory for PaddlePaddle, in MD unit.");
-
-DEFINE_double(
-    fraction_of_cuda_pinned_memory_to_use, 0.5,
-    "Default use 50% of CPU memory as the pinned_memory for PaddlePaddle,"
-    "reserve the rest for page tables, etc");
+// If use_pinned_memory is true, CPUAllocator calls mlock, which
+// returns pinned and locked memory as staging areas for data exchange
+// between host and device.  Allocates too much would reduce the amount
+// of memory available to the system for paging.  So, by default, we
+// should set false to use_pinned_memory.
+DEFINE_bool(use_pinned_memory, true, "If set, allocate cpu pinned memory.");
 
 namespace paddle {
 namespace platform {
 
-inline size_t CpuTotalPhysicalMemory() {
+size_t CpuTotalPhysicalMemory() {
 #ifdef __APPLE__
   int mib[2];
   mib[0] = CTL_HW;
@@ -60,6 +56,11 @@ inline size_t CpuTotalPhysicalMemory() {
   size_t len = sizeof(size);
   if (sysctl(mib, 2, &size, &len, NULL, 0) == 0) return (size_t)size;
   return 0L;
+#elif defined(_WIN32)
+  MEMORYSTATUSEX sMeminfo;
+  sMeminfo.dwLength = sizeof(sMeminfo);
+  GlobalMemoryStatusEx(&sMeminfo);
+  return sMeminfo.ullTotalPhys;
 #else
   int64_t pages = sysconf(_SC_PHYS_PAGES);
   int64_t page_size = sysconf(_SC_PAGE_SIZE);
@@ -103,7 +104,6 @@ size_t CUDAPinnedMaxChunkSize() {
   return CUDAPinnedMaxAllocSize() / 256;
 }
 
-namespace jit {
 #ifdef PADDLE_WITH_XBYAK
 static Xbyak::util::Cpu cpu;
 bool MayIUse(const cpu_isa_t cpu_isa) {
@@ -115,7 +115,7 @@ bool MayIUse(const cpu_isa_t cpu_isa) {
       return cpu.has(Cpu::tAVX);
     case avx2:
       return cpu.has(Cpu::tAVX2);
-    case avx512_common:
+    case avx512f:
       return cpu.has(Cpu::tAVX512F);
     case avx512_core:
       return true && cpu.has(Cpu::tAVX512F) && cpu.has(Cpu::tAVX512BW) &&
@@ -140,11 +140,45 @@ bool MayIUse(const cpu_isa_t cpu_isa) {
   if (cpu_isa == isa_any) {
     return true;
   } else {
+#if !defined(WITH_NV_JETSON) && !defined(PADDLE_WITH_ARM) && \
+    !defined(PADDLE_WITH_SW)
+    int reg[4];
+    cpuid(reg, 0);
+    int nIds = reg[0];
+    if (nIds >= 0x00000001) {
+      // EAX = 1
+      cpuid(reg, 0x00000001);
+      // AVX: ECX Bit 28
+      if (cpu_isa == avx) {
+        int avx_mask = (1 << 28);
+        return (reg[2] & avx_mask) != 0;
+      }
+    }
+    if (nIds >= 0x00000007) {
+      // EAX = 7
+      cpuid(reg, 0x00000007);
+      if (cpu_isa == avx2) {
+        // AVX2: EBX Bit 5
+        int avx2_mask = (1 << 5);
+        return (reg[1] & avx2_mask) != 0;
+      } else if (cpu_isa == avx512f) {
+        // AVX512F: EBX Bit 16
+        int avx512f_mask = (1 << 16);
+        return (reg[1] & avx512f_mask) != 0;
+      } else if (cpu_isa == avx512_core) {
+        unsigned int avx512f_mask = (1 << 16);
+        unsigned int avx512dq_mask = (1 << 17);
+        unsigned int avx512bw_mask = (1 << 30);
+        unsigned int avx512vl_mask = (1 << 31);
+        return ((reg[1] & avx512f_mask) && (reg[1] & avx512dq_mask) &&
+                (reg[1] & avx512bw_mask) && (reg[1] & avx512vl_mask));
+      }
+    }
+#endif
     return false;
   }
 }
 #endif
 
-}  // namespace jit
 }  // namespace platform
 }  // namespace paddle

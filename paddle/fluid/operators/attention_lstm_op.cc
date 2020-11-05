@@ -13,100 +13,129 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #include "paddle/fluid/operators/attention_lstm_op.h"
-#include <sys/time.h>
 #include <string>
 #include "paddle/fluid/operators/math/blas.h"
 #include "paddle/fluid/operators/math/cpu_vec.h"
-#include "paddle/fluid/operators/math/fc_compute.h"
+#include "paddle/fluid/operators/math/fc.h"
 #include "paddle/fluid/platform/cpu_info.h"
 
 namespace paddle {
 namespace operators {
 
 void AttentionLSTMOp::InferShape(framework::InferShapeContext* ctx) const {
-  PADDLE_ENFORCE(ctx->HasInput("X"),
-                 "Input(X) of AttentionLSTM should not be null.");
-  PADDLE_ENFORCE(ctx->HasInput("C0"),
-                 "Input(C0) of AttentionLSTM should not be null.");
-  PADDLE_ENFORCE(ctx->HasInput("LSTMWeight"),
-                 "Input(LSTMWeight) of AttentionLSTM should not be null.");
-  PADDLE_ENFORCE(ctx->HasInput("LSTMBias"),
-                 "Input(LSTMBias) of AttentionLSTM should not be null.");
-  PADDLE_ENFORCE(ctx->HasInput("AttentionWeight"),
-                 "Input(AttentionWeight) of AttentionLSTM should not be null.");
+  OP_INOUT_CHECK(ctx->HasInput("X"), "Input", "X", "AttentionLstm");
+  OP_INOUT_CHECK(ctx->HasInput("C0"), "Input", "C0", "AttentionLstm");
+  OP_INOUT_CHECK(ctx->HasInput("LSTMWeight"), "Input", "LSTMWeight",
+                 "AttentionLstm");
+  OP_INOUT_CHECK(ctx->HasInput("LSTMBias"), "Input", "LSTMBias",
+                 "AttentionLstm");
+  OP_INOUT_CHECK(ctx->HasInput("AttentionWeight"), "Input", "AttentionWeight",
+                 "AttentionLstm");
 
-  PADDLE_ENFORCE(ctx->HasOutput("Hidden"),
-                 "Output(Hidden) of AttentionLSTM should not be null.");
-  PADDLE_ENFORCE(ctx->HasOutput("Cell"),
-                 "Output(Cell) of AttentionLSTM should not be null.");
-  PADDLE_ENFORCE(ctx->HasOutput("AttentionedX"),
-                 "Output(AttentionedX) of AttentionLSTM should not be null.");
-  PADDLE_ENFORCE(ctx->HasOutput("AttentionFCOut"),
-                 "Output(AttentionFCOut) of AttentionLSTM should not be null.");
-  PADDLE_ENFORCE(ctx->HasOutput("LSTMX"),
-                 "Output(LSTMX) of AttentionLSTM should not be null.");
-  PADDLE_ENFORCE(ctx->HasOutput("LSTMOUT"),
-                 "Output(LSTMOUT) of AttentionLSTM should not be null.");
+  OP_INOUT_CHECK(ctx->HasOutput("Hidden"), "Output", "Hidden", "AttentionLstm");
+  OP_INOUT_CHECK(ctx->HasOutput("Cell"), "Output", "Cell", "AttentionLstm");
+  OP_INOUT_CHECK(ctx->HasOutput("AttentionedX"), "Output", "AttentionedX",
+                 "AttentionLstm");
+  OP_INOUT_CHECK(ctx->HasOutput("AttentionFCOut"), "Output", "AttentionFCOut",
+                 "AttentionLstm");
+  OP_INOUT_CHECK(ctx->HasOutput("LSTMX"), "Output", "LSTMX", "AttentionLstm");
+  OP_INOUT_CHECK(ctx->HasOutput("LSTMOUT"), "Output", "LSTMOUT",
+                 "AttentionLstm");
 
   auto x_dims = ctx->GetInputDim("X");
   const int M = x_dims[1];
-  PADDLE_ENFORCE_EQ(x_dims.size(), 2, "Input(X)'s rank must be 2.");
+  PADDLE_ENFORCE_EQ(x_dims.size(), 2, platform::errors::InvalidArgument(
+                                          "Input(X)'s rank must be 2."));
 
   auto w_dims = ctx->GetInputDim("LSTMWeight");
   const int D = w_dims[1] / 4;
-  PADDLE_ENFORCE_EQ(w_dims.size(), 2, "Input(LSTMWeight)'s rank must be 2.");
-  PADDLE_ENFORCE_EQ(w_dims[0], D + M,
-                    "LSTMWeight dims should be (%d + %d) * %d.", D + M, 4 * D);
+  PADDLE_ENFORCE_EQ(
+      w_dims.size(), 2,
+      platform::errors::InvalidArgument("Input(LSTMWeight)'s rank must be 2."));
+  PADDLE_ENFORCE_EQ(
+      w_dims[0], D + M,
+      platform::errors::InvalidArgument(
+          "LSTMWeight dims should be (%d + %d) * %d.", D, M, 4 * D));
 
   auto b_dims = ctx->GetInputDim("LSTMBias");
-  PADDLE_ENFORCE_EQ(b_dims.size(), 2, "Input(LSTMBias)'s rank must be 2.");
-  PADDLE_ENFORCE_EQ(b_dims[0], 1, "LSTMBias dims should be 1 x %d.", 4 * D);
-  PADDLE_ENFORCE_EQ(b_dims[1], 4 * D, "LSTMBias dims should be 1 x %d.", 4 * D);
+  PADDLE_ENFORCE_EQ(b_dims.size(), 2, platform::errors::InvalidArgument(
+                                          "Input(LSTMBias)'s rank must be 2."));
+  PADDLE_ENFORCE_EQ(b_dims[0], 1,
+                    platform::errors::InvalidArgument(
+                        "LSTMBias dims should be 1 x %d.", 4 * D));
+  PADDLE_ENFORCE_EQ(b_dims[1], 4 * D,
+                    platform::errors::InvalidArgument(
+                        "LSTMBias dims should be 1 x %d.", 4 * D));
 
   auto c_dims = ctx->GetInputDim("C0");
-  PADDLE_ENFORCE_EQ(c_dims.size(), 2, "Input(C0)'s rank must be 2.");
-  PADDLE_ENFORCE_EQ(c_dims[1], D, "C0 dims should be N x %d.", D);
+  PADDLE_ENFORCE_EQ(c_dims.size(), 2, platform::errors::InvalidArgument(
+                                          "Input(C0)'s rank must be 2."));
+  if (ctx->IsRuntime()) {
+    PADDLE_ENFORCE_EQ(c_dims[1], D, platform::errors::InvalidArgument(
+                                        "C0 dims should be N x %d.", D));
+  }
+
   if (ctx->HasInput("H0")) {
     auto h_dims = ctx->GetInputDim("H0");
-    PADDLE_ENFORCE(h_dims == c_dims,
-                   "The dimension of Input(H0) and Input(C0) "
-                   "should be the same.");
+    PADDLE_ENFORCE_EQ(h_dims.size(), 2UL, platform::errors::InvalidArgument(
+                                              "Input(H0)'s rank must be 2."));
+    if (ctx->IsRuntime() ||
+        (framework::product(c_dims) > 0 && framework::product(h_dims) > 0)) {
+      PADDLE_ENFORCE_EQ(h_dims, c_dims,
+                        platform::errors::InvalidArgument(
+                            "The dimension of Input(H0) and Input(C0) "
+                            "should be the same."));
+    }
   }
 
   auto atten_w_dims = ctx->GetInputDim("AttentionWeight");
   PADDLE_ENFORCE_EQ(atten_w_dims.size(), 2,
-                    "Input(AttentionWeight)'s rank must be 2.");
+                    platform::errors::InvalidArgument(
+                        "Input(AttentionWeight)'s rank must be 2."));
   PADDLE_ENFORCE_EQ(atten_w_dims[0], M + D,
-                    "AttentionWeight shapes must be (%d + %d) * 1.", M, D);
+                    platform::errors::InvalidArgument(
+                        "AttentionWeight shapes must be (%d + %d) * 1.", M, D));
   PADDLE_ENFORCE_EQ(atten_w_dims[1], 1,
-                    "AttentionWeight shapes must be (%d + %d) * 1.", M, D);
+                    platform::errors::InvalidArgument(
+                        "AttentionWeight shapes must be (%d + %d) * 1.", M, D));
+
   if (ctx->HasInput("AttentionBias")) {
     auto atten_b_dims = ctx->GetInputDim("AttentionBias");
     PADDLE_ENFORCE_EQ(atten_b_dims.size(), 2,
-                      "Input(AttentionBias)'s rank must be 2.");
+                      platform::errors::InvalidArgument(
+                          "Input(AttentionBias)'s rank must be 2."));
     PADDLE_ENFORCE_EQ(atten_b_dims[0], 1,
-                      "AttentionBias shapes must be 1 * 1.");
+                      platform::errors::InvalidArgument(
+                          "AttentionBias shapes must be 1 * 1."));
     PADDLE_ENFORCE_EQ(atten_b_dims[1], 1,
-                      "AttentionBias shapes must be 1 * 1.");
+                      platform::errors::InvalidArgument(
+                          "AttentionBias shapes must be 1 * 1."));
   }
 
   if (ctx->HasInput("AttentionScalar")) {
     auto dims = ctx->GetInputDim("AttentionScalar");
     PADDLE_ENFORCE_EQ(dims.size(), 2,
-                      "Input(AttentionScalar)'s rank must be 2.");
-    PADDLE_ENFORCE_EQ(dims[0], 1, "AttentionScalar shapes must be 1 * 1.");
-    PADDLE_ENFORCE_EQ(dims[1], 1, "AttentionScalar shapes must be 1 * 1.");
+                      platform::errors::InvalidArgument(
+                          "Input(AttentionScalar)'s rank must be 2."));
+    PADDLE_ENFORCE_EQ(dims[0], 1, platform::errors::InvalidArgument(
+                                      "AttentionScalar shapes must be 1 * 1."));
+    PADDLE_ENFORCE_EQ(dims[1], 1, platform::errors::InvalidArgument(
+                                      "AttentionScalar shapes must be 1 * 1."));
   }
 
   if (ctx->HasInput("AttentionScalarBias")) {
     auto dims = ctx->GetInputDim("AttentionScalarBias");
-    PADDLE_ENFORCE(
-        ctx->HasInput("AttentionScalar"),
-        "AttentionScalar should not be null when have AttentionScalarBias.");
+    OP_INOUT_CHECK(ctx->HasInput("AttentionScalar"), "Input", "AttentionScalar",
+                   "AttentionLstm");
     PADDLE_ENFORCE_EQ(dims.size(), 2,
-                      "Input(AttentionScalarBias)'s rank must be 2.");
-    PADDLE_ENFORCE_EQ(dims[0], 1, "AttentionScalarBias shapes must be 1 * 1.");
-    PADDLE_ENFORCE_EQ(dims[1], 1, "AttentionScalarBias shapes must be 1 * 1.");
+                      platform::errors::InvalidArgument(
+                          "Input(AttentionScalarBias)'s rank must be 2."));
+    PADDLE_ENFORCE_EQ(dims[0], 1,
+                      platform::errors::InvalidArgument(
+                          "AttentionScalarBias shapes must be 1 * 1."));
+    PADDLE_ENFORCE_EQ(dims[1], 1,
+                      platform::errors::InvalidArgument(
+                          "AttentionScalarBias shapes must be 1 * 1."));
   }
 
   framework::DDim out_dims({x_dims[0], D});
@@ -123,8 +152,7 @@ void AttentionLSTMOp::InferShape(framework::InferShapeContext* ctx) const {
 framework::OpKernelType AttentionLSTMOp::GetExpectedKernelType(
     const framework::ExecutionContext& ctx) const {
   return framework::OpKernelType(
-      framework::ToDataType(ctx.Input<framework::LoDTensor>("X")->type()),
-      ctx.device_context());
+      OperatorWithKernel::IndicateVarDataType(ctx, "X"), ctx.device_context());
 }
 
 void AttentionLSTMOpMaker::Make() {
@@ -201,7 +229,7 @@ void AttentionLSTMOpMaker::Make() {
       .InEnum({"sigmoid", "tanh", "relu", "identity"});
   AddAttr<std::string>("cell_activation",
                        "(string, default: tanh)"
-                       "The activation for cell output, `tanh` by defalut.")
+                       "The activation for cell output, `tanh` by default.")
       .SetDefault("tanh")
       .InEnum({"sigmoid", "tanh", "relu", "identity"});
   AddAttr<std::string>("candidate_activation",
@@ -232,10 +260,10 @@ use lstm_x_t as input and compute as standard LSTM.
 template <typename T>
 inline void bias_relu(const int n, const T* x, const T* bias, T* y) {
   if (bias) {
-    math::vec_add_bias<T, platform::jit::avx>(n, *bias, x, y);
-    math::vec_relu<T, platform::jit::avx>(n, y, y);
+    math::vec_add_bias<T, platform::avx>(n, *bias, x, y);
+    math::vec_relu<T, platform::avx>(n, y, y);
   } else {
-    math::vec_relu<T, platform::jit::avx>(n, x, y);
+    math::vec_relu<T, platform::avx>(n, x, y);
   }
 }
 
@@ -246,8 +274,8 @@ inline void vec_softmax(const int n, const T* x, T* y) {
   for (int i = 1; i < n; ++i) {
     scalar = scalar < x[i] ? x[i] : scalar;
   }
-  math::vec_add_bias<T, platform::jit::avx>(n, -scalar, x, y);  // sub
-  math::vec_exp<T>(n, y, y);                                    // exp
+  math::vec_add_bias<T, platform::avx>(n, -scalar, x, y);  // sub
+  math::vec_exp<T>(n, y, y);                               // exp
   // sum
   scalar = T(0);
   for (int i = 0; i < n; ++i) {
@@ -295,21 +323,24 @@ class AttentionLSTMKernel : public framework::OpKernel<T> {
       int len = x_lod[0][i + 1] - x_lod[0][i];
       max_seq_len = max_seq_len < len ? len : max_seq_len;
     }
-    PADDLE_ENFORCE_EQ(x_lod.size(), 1, "Input(X)'s lod size must be 1.");
-    PADDLE_ENFORCE_EQ(c0->dims()[0], N, "C0 dims should be %d x %d.", N, D);
+    PADDLE_ENFORCE_EQ(x_lod.size(), 1UL, platform::errors::InvalidArgument(
+                                             "Input(X)'s lod size must be 1."));
+    PADDLE_ENFORCE_EQ(
+        c0->dims()[0], N,
+        platform::errors::InvalidArgument("C0 dims should be %d x %d.", N, D));
     fc_out->Resize({max_seq_len, 1});
 
     std::function<void(const int, const T *, T *)> act_gate, act_cell, act_cand;
     auto& act_gate_str = ctx.Attr<std::string>("gate_activation");
     auto& act_cell_str = ctx.Attr<std::string>("cell_activation");
     auto& act_cand_str = ctx.Attr<std::string>("candidate_activation");
-    if (platform::jit::MayIUse(platform::jit::avx)) {
-      math::VecActivations<T, platform::jit::avx> act_functor;
+    if (platform::MayIUse(platform::avx)) {
+      math::VecActivations<T, platform::avx> act_functor;
       act_gate = act_functor(act_gate_str);
       act_cell = act_functor(act_cell_str);
       act_cand = act_functor(act_cand_str);
     } else {
-      math::VecActivations<T, platform::jit::isa_any> act_functor;
+      math::VecActivations<T, platform::isa_any> act_functor;
       act_gate = act_functor(act_gate_str);
       act_cell = act_functor(act_cell_str);
       act_cand = act_functor(act_cand_str);
@@ -333,10 +364,13 @@ class AttentionLSTMKernel : public framework::OpKernel<T> {
     T* lstm_x_data = lstm_x->mutable_data<T>(ctx.GetPlace());
     T* lstm_out_data = lstm_out->mutable_data<T>(ctx.GetPlace());
 
+    auto blas = math::GetBlas<platform::CPUDeviceContext, T>(ctx);
+
     // x(TxM) * fc (Mx1) part of atten_wgt(M+D)x1
-    auto blas = math::GetBlas<DeviceContext, T>(ctx);
-    math::FCCompute<DeviceContext, T>(blas, total_T, 1, M, x_data, atten_w_data,
-                                      atted_x_data, atten_b_data);
+    auto& dev_ctx = ctx.template device_context<platform::CPUDeviceContext>();
+    math::FCFunctor<DeviceContext, T> fc;
+    fc(dev_ctx, total_T, 1, M, x_data, atten_w_data, atted_x_data,
+       atten_b_data);
 
     const T* cur_atten_x_data = atted_x_data;
     const T* cur_x_data = x_data;
@@ -363,8 +397,7 @@ class AttentionLSTMKernel : public framework::OpKernel<T> {
         // 1d. softmax
         vec_softmax<T>(seq_len, fc_out_data, fc_out_data);
         // mul x(seq_len*M) and sum pool
-        math::FCCompute<DeviceContext, T>(blas, 1, M, seq_len, fc_out_data,
-                                          cur_x_data, lstm_x_data);
+        fc(dev_ctx, 1, M, seq_len, fc_out_data, cur_x_data, lstm_x_data);
 
         /// 2. compute LSTM step
         // lstm weight : concat[forget , input , output , tilde]
@@ -413,8 +446,7 @@ class AttentionLSTMKernel : public framework::OpKernel<T> {
 
 namespace ops = paddle::operators;
 REGISTER_OPERATOR(attention_lstm, ops::AttentionLSTMOp,
-                  ops::AttentionLSTMOpMaker,
-                  paddle::framework::DefaultGradOpDescMaker<true>);
+                  ops::AttentionLSTMOpMaker);
 
 REGISTER_OP_CPU_KERNEL(attention_lstm, ops::AttentionLSTMKernel<float>,
                        ops::AttentionLSTMKernel<double>);

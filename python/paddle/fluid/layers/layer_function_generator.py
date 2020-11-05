@@ -20,10 +20,13 @@ import string
 
 from six.moves import cStringIO
 from ..proto import framework_pb2
-from ..framework import OpProtoHolder, Variable
+from ..framework import OpProtoHolder, Variable, core, convert_np_dtype_to_dtype_, in_dygraph_mode
 from ..layer_helper import LayerHelper
+from ..data_feeder import check_variable_and_dtype
 
-__all__ = ['deprecated', 'generate_layer_fn', 'autodoc', 'templatedoc']
+__all__ = [
+    'generate_layer_fn', 'generate_activation_fn', 'autodoc', 'templatedoc'
+]
 
 
 def _convert_(name):
@@ -58,7 +61,9 @@ def escape_math(text):
                                     _two_dollar_pattern_.sub(r"!!\1!!", text)))
 
 
-def _generate_doc_string_(op_proto):
+def _generate_doc_string_(op_proto,
+                          additional_args_lines=None,
+                          skip_attrs_set=None):
     """
     Generate docstring by OpProto
 
@@ -76,8 +81,9 @@ def _generate_doc_string_(op_proto):
     buf.write(escape_math(op_proto.comment))
     buf.write('\nArgs:\n')
     for each_input in op_proto.inputs:
-        line_begin = '    {0}: '.format(_convert_(each_input.name))
+        line_begin = '    {0}'.format(_convert_(each_input.name))
         buf.write(line_begin)
+        buf.write(" (Tensor): ")
         buf.write(escape_math(each_input.comment))
         if each_input.duplicable:
             buf.write("  Duplicatable.")
@@ -86,6 +92,14 @@ def _generate_doc_string_(op_proto):
         buf.write('\n')
 
     skip_attrs = OpProtoHolder.generated_op_attr_names()
+    # attr use_mkldnn and is_test also should not be visible to users.
+    skip_attrs.add("use_mkldnn")
+    skip_attrs.add("is_test")
+    skip_attrs.add("use_cudnn")
+
+    if skip_attrs_set:
+        for t in skip_attrs_set:
+            skip_attrs.add(t)
 
     for each_attr in op_proto.attrs:
         if each_attr.name in skip_attrs:
@@ -98,12 +112,21 @@ def _generate_doc_string_(op_proto):
         buf.write(escape_math(each_attr.comment))
         buf.write('\n')
 
+    if additional_args_lines is not None:
+        for line in additional_args_lines:
+            line = line.strip()
+            buf.write('    ')
+            buf.write(line)
+            buf.write('\n')
+
     if len(op_proto.outputs) != 0:
         buf.write('\nReturns:\n')
         buf.write('    ')
         for each_opt in op_proto.outputs:
             if not each_opt.intermediate:
                 break
+        buf.write(_convert_(each_opt.name))
+        buf.write(' (Tensor): ')
         buf.write(escape_math(each_opt.comment))
 
     return buf.getvalue()
@@ -153,6 +176,8 @@ def generate_layer_fn(op_type):
             if not isinstance(val, list) and not isinstance(val, tuple):
                 val = [val]
             if len(val) == 0:
+                if len(args) == 0:
+                    continue
                 val = [args[0]]
                 args = args[1:]
 
@@ -168,6 +193,15 @@ def generate_layer_fn(op_type):
                         "operator {0} must input same dtype. {1} vs {2}".format(
                             op_type, dtype, each.dtype))
 
+        if dtype is None:
+            arg_dtype = kwargs.get("dtype")
+            if arg_dtype:
+                if not isinstance(arg_dtype, core.VarDesc.VarType):
+                    dtype = convert_np_dtype_to_dtype_(arg_dtype)
+                else:
+                    dtype = arg_dtype
+            else:
+                dtype = core.VarDesc.VarType.FP32
         return dtype
 
     def func(*args, **kwargs):
@@ -192,10 +226,12 @@ def generate_layer_fn(op_type):
             out_var = out[0] if (isinstance(out, list) or
                                  isinstance(out, tuple)) else out
         else:
-            out_var = helper.create_tmp_variable(dtype=dtype)
+            out_var = helper.create_variable_for_type_inference(dtype=dtype)
         outputs[o_name] = [out_var]
         for name in intermediate_output_names:
-            outputs[name] = [helper.create_tmp_variable(dtype=dtype)]
+            outputs[name] = [
+                helper.create_variable_for_type_inference(dtype=dtype)
+            ]
         helper.append_op(
             type=op_type, inputs=inputs, outputs=outputs, attrs=kwargs)
         return helper.append_activation(out_var)
@@ -205,26 +241,45 @@ def generate_layer_fn(op_type):
     return func
 
 
-def deprecated(func_or_class):
-    """
-    Deprecated warning decorator. It will result a warning message.
-    Should be used before class or function, member function
-    """
+def generate_activation_fn(op_type):
+    """Register the Python layer for an Operator without Attribute.
 
-    @functools.wraps(func)
-    def func_wrapper(*args, **kwargs):
-        """
-        Wrap func with deprecated warning
-        """
-        warnings.simplefilter('always', DeprecationWarning)  # turn off filter
-        warnings.warn(
-            "Call to deprecated function {}.".format(func.__name__),
-            category=DeprecationWarning,
-            stacklevel=2)
-        warnings.simplefilter('default', DeprecationWarning)  # reset filter
-        return func(*args, **kwargs)
+    Args:
+       op_type: The name of the operator to be created.
 
-    return func_wrapper
+    This function takes in the operator type (sigmoid, exp , tanh etc) and
+    creates the operator functionality.
+
+    """
+    op_proto = OpProtoHolder.instance().get_op_proto(op_type)
+
+    def func(x, name=None):
+        if in_dygraph_mode():
+            op = getattr(core.ops, op_type)
+            return op(x)
+
+        if op_type not in ["abs", "exp", "square"]:
+            check_variable_and_dtype(x, 'x', ['float16', 'float32', 'float64'],
+                                     op_type)
+        else:
+            # abs exp square ops support dtype(int32, int64, float16, float32, float64)
+            check_variable_and_dtype(
+                x, 'x', ['int32', 'int64', 'float16', 'float32', 'float64'],
+                op_type)
+
+        helper = LayerHelper(op_type, **locals())
+
+        output = helper.create_variable_for_type_inference(dtype=x.dtype)
+        helper.append_op(type=op_type, inputs={"X": x}, outputs={"Out": output})
+        return output
+
+    func.__name__ = op_type
+    func.__doc__ = _generate_doc_string_(
+        op_proto,
+        additional_args_lines=[
+            "name (str, optional): Name for the operation (optional, default is None). For more information, please refer to :ref:`api_guide_Name`."
+        ])
+    return func
 
 
 def autodoc(comment=""):
@@ -292,3 +347,14 @@ def templatedoc(op_type=None):
         return func
 
     return __impl__
+
+
+def add_sample_code(func, sample_code):
+    """
+    Append sample code for dynamically generated functions. 
+
+    Args:
+       func: The function of the function to be append sample code to.
+       sample_code: sample code session in rst format.
+    """
+    func.__doc__ = func.__doc__ + sample_code

@@ -13,19 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License. */
 
 #pragma once
-#ifdef PADDLE_WITH_MKLML
-#include "paddle/fluid/platform/dynload/mklml.h"
-#endif
-
-#ifdef PADDLE_USE_OPENBLAS
-#include <cblas.h>
-// remove typedef in openblas
-#undef FLOAT
-#undef INT
-#undef SIZE
-#endif
-
 #include <cmath>
+#include <memory>
 #include <vector>
 
 #include "paddle/fluid/framework/eigen.h"
@@ -38,6 +27,14 @@ limitations under the License. */
 namespace paddle {
 namespace operators {
 namespace math {
+
+template <typename DeviceContext, typename T>
+struct TransposeNormal {
+  // for dims >= 7 situation
+  void operator()(const DeviceContext& context, const framework::Tensor& in,
+                  framework::Tensor* out, const std::vector<int>& axis);
+};
+
 template <typename DeviceContext, typename T, int Rank>
 struct Transpose {
   void operator()(const DeviceContext& context, const framework::Tensor& in,
@@ -64,6 +61,13 @@ struct RowwiseAdd {
 };
 
 template <typename DeviceContext, typename T>
+struct ElementwiseAddTo {
+  // dst = dst + src
+  void operator()(DeviceContext* ctx, const framework::Tensor& src,
+                  framework::Tensor* dst);
+};
+
+template <typename DeviceContext, typename T>
 struct ColwiseSum {
   void operator()(const DeviceContext& context, const framework::Tensor& input,
                   framework::Tensor* vec);
@@ -80,6 +84,33 @@ struct RowwiseMean {
   void operator()(const DeviceContext& context, const framework::Tensor& input,
                   framework::Tensor* vec);
 };
+
+#ifdef PADDLE_WITH_XPU
+template <typename U>
+struct TensorSetConstantXPU {
+  TensorSetConstantXPU(framework::Tensor* tensor, U value)
+      : tensor_(tensor), value_(value) {}
+  template <typename T>
+  void apply() const {
+    int dev_id = -1;
+    xpu_current_device(&dev_id);
+    if (dev_id >= 64) {
+      // if dev_id >= 64, the device is a simulator device, -64 to get real
+      // dev_id
+      dev_id -= 64;
+    }
+    auto xpu = platform::XPUPlace(dev_id);
+    auto* begin = tensor_->mutable_data<T>(xpu);
+    int numel = tensor_->numel();
+    std::unique_ptr<T[]> data_cpu(new T[numel]);
+    std::fill(data_cpu.get(), data_cpu.get() + numel, static_cast<T>(value_));
+    memory::Copy(xpu, begin, platform::CPUPlace(),
+                 static_cast<void*>(data_cpu.get()), numel * sizeof(T));
+  }
+  framework::Tensor* tensor_;
+  U value_;
+};
+#endif
 
 }  // namespace math
 }  // namespace operators

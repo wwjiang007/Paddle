@@ -76,13 +76,18 @@ class DetectionMAPOpKernel : public framework::OpKernel<T> {
     auto ap_type = GetAPType(ctx.Attr<std::string>("ap_type"));
     int class_num = ctx.Attr<int>("class_num");
 
-    auto label_lod = in_label->lod();
-    auto detect_lod = in_detect->lod();
-    PADDLE_ENFORCE_EQ(label_lod.size(), 1UL,
-                      "Only support one level sequence now.");
+    auto& label_lod = in_label->lod();
+    auto& detect_lod = in_detect->lod();
+    PADDLE_ENFORCE_EQ(
+        label_lod.size(), 1UL,
+        platform::errors::InvalidArgument("Only support LodTensor of lod_level "
+                                          "with 1 in label, but received %d.",
+                                          label_lod.size()));
     PADDLE_ENFORCE_EQ(label_lod[0].size(), detect_lod[0].size(),
-                      "The batch_size of input(Label) and input(Detection) "
-                      "must be the same.");
+                      platform::errors::InvalidArgument(
+                          "The batch_size of input(Label) and input(Detection) "
+                          "must be the same, but received %d:%d",
+                          label_lod[0].size(), detect_lod[0].size()));
 
     std::vector<std::map<int, std::vector<Box>>> gt_boxes;
     std::vector<std::map<int, std::vector<std::pair<T, Box>>>> detect_boxes;
@@ -166,11 +171,11 @@ class DetectionMAPOpKernel : public framework::OpKernel<T> {
     auto labels = framework::EigenTensor<T, 2>::From(input_label);
     auto detect = framework::EigenTensor<T, 2>::From(input_detect);
 
-    auto label_lod = input_label.lod();
-    auto detect_lod = input_detect.lod();
+    auto& label_lod = input_label.lod();
+    auto& detect_lod = input_detect.lod();
 
     int batch_size = label_lod[0].size() - 1;
-    auto label_index = label_lod[0];
+    auto& label_index = label_lod[0];
 
     for (int n = 0; n < batch_size; ++n) {
       std::map<int, std::vector<Box>> boxes;
@@ -185,7 +190,12 @@ class DetectionMAPOpKernel : public framework::OpKernel<T> {
             box.is_difficult = true;
           boxes[label].push_back(box);
         } else {
-          PADDLE_ENFORCE_EQ(input_label.dims()[1], 5);
+          PADDLE_ENFORCE_EQ(
+              input_label.dims()[1], 5,
+              platform::errors::InvalidArgument(
+                  "The input label width"
+                  " must be 5, but received %d, please check your input data",
+                  input_label.dims()[1]));
           Box box(labels(i, 1), labels(i, 2), labels(i, 3), labels(i, 4));
           boxes[label].push_back(box);
         }
@@ -274,7 +284,6 @@ class DetectionMAPOpKernel : public framework::OpKernel<T> {
 
     output_true_pos->set_lod(true_pos_lod);
     output_false_pos->set_lod(false_pos_lod);
-    return;
   }
 
   void GetInputPos(const framework::Tensor& input_pos_count,
@@ -292,7 +301,7 @@ class DetectionMAPOpKernel : public framework::OpKernel<T> {
     auto SetData = [](const framework::LoDTensor& pos_tensor,
                       std::map<int, std::vector<std::pair<T, int>>>& pos) {
       const T* pos_data = pos_tensor.data<T>();
-      auto pos_data_lod = pos_tensor.lod()[0];
+      auto& pos_data_lod = pos_tensor.lod()[0];
       for (size_t i = 0; i < pos_data_lod.size() - 1; ++i) {
         for (size_t j = pos_data_lod[i]; j < pos_data_lod[i + 1]; ++j) {
           T score = pos_data[j * 2];
@@ -317,20 +326,23 @@ class DetectionMAPOpKernel : public framework::OpKernel<T> {
       std::map<int, std::vector<std::pair<T, int>>>* false_pos) const {
     int batch_size = gt_boxes.size();
     for (int n = 0; n < batch_size; ++n) {
-      auto image_gt_boxes = gt_boxes[n];
-      for (auto it = image_gt_boxes.begin(); it != image_gt_boxes.end(); ++it) {
+      auto& image_gt_boxes = gt_boxes[n];
+      for (auto& image_gt_box : image_gt_boxes) {
         size_t count = 0;
-        auto labeled_bboxes = it->second;
+        auto& labeled_bboxes = image_gt_box.second;
         if (evaluate_difficult) {
           count = labeled_bboxes.size();
         } else {
-          for (size_t i = 0; i < labeled_bboxes.size(); ++i)
-            if (!(labeled_bboxes[i].is_difficult)) ++count;
+          for (auto& box : labeled_bboxes) {
+            if (!box.is_difficult) {
+              ++count;
+            }
+          }
         }
         if (count == 0) {
           continue;
         }
-        int label = it->first;
+        int label = image_gt_box.first;
         if (label_pos_count->find(label) == label_pos_count->end()) {
           (*label_pos_count)[label] = count;
         } else {
@@ -418,8 +430,11 @@ class DetectionMAPOpKernel : public framework::OpKernel<T> {
     for (auto it = label_pos_count.begin(); it != label_pos_count.end(); ++it) {
       int label = it->first;
       int label_num_pos = it->second;
-      if (label_num_pos == background_label ||
-          true_pos.find(label) == true_pos.end()) {
+      if (label_num_pos == background_label) {
+        continue;
+      }
+      if (true_pos.find(label) == true_pos.end()) {
+        count++;
         continue;
       }
       auto label_true_pos = true_pos.find(label)->second;
@@ -466,7 +481,9 @@ class DetectionMAPOpKernel : public framework::OpKernel<T> {
         mAP += average_precisions;
         ++count;
       } else {
-        LOG(FATAL) << "Unkown ap version: " << ap_type;
+        PADDLE_THROW(platform::errors::Unimplemented(
+            "Unkown ap version %s. Now only supports integral and l1point.",
+            ap_type));
       }
     }
     if (count != 0) mAP /= count;

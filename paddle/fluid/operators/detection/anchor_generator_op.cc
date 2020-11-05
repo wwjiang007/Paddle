@@ -22,16 +22,23 @@ class AnchorGeneratorOp : public framework::OperatorWithKernel {
   using framework::OperatorWithKernel::OperatorWithKernel;
 
   void InferShape(framework::InferShapeContext* ctx) const override {
-    PADDLE_ENFORCE(ctx->HasInput("Input"),
-                   "Input(Input) of AnchorGeneratorOp should not be null.");
-    PADDLE_ENFORCE(ctx->HasOutput("Anchors"),
-                   "Output(Anchors) of AnchorGeneratorOp should not be null.");
-    PADDLE_ENFORCE(
-        ctx->HasOutput("Variances"),
-        "Output(Variances) of AnchorGeneratorOp should not be null.");
+    PADDLE_ENFORCE_EQ(
+        ctx->HasInput("Input"), true,
+        platform::errors::InvalidArgument(
+            "Input(Input) of AnchorGeneratorOp should not be null."));
+    PADDLE_ENFORCE_EQ(
+        ctx->HasOutput("Anchors"), true,
+        platform::errors::InvalidArgument(
+            "Output(Anchors) of AnchorGeneratorOp should not be null."));
+    PADDLE_ENFORCE_EQ(
+        ctx->HasOutput("Variances"), true,
+        platform::errors::InvalidArgument(
+            "Output(Variances) of AnchorGeneratorOp should not be null."));
 
     auto input_dims = ctx->GetInputDim("Input");
-    PADDLE_ENFORCE(input_dims.size() == 4, "The layout of input is NCHW.");
+    PADDLE_ENFORCE_EQ(
+        input_dims.size(), 4,
+        platform::errors::InvalidArgument("The layout of input is NCHW."));
 
     auto anchor_sizes = ctx->Attrs().Get<std::vector<float>>("anchor_sizes");
     auto aspect_ratios = ctx->Attrs().Get<std::vector<float>>("aspect_ratios");
@@ -53,7 +60,7 @@ class AnchorGeneratorOp : public framework::OperatorWithKernel {
   framework::OpKernelType GetExpectedKernelType(
       const framework::ExecutionContext& ctx) const override {
     return framework::OpKernelType(
-        framework::ToDataType(ctx.Input<framework::Tensor>("Input")->type()),
+        OperatorWithKernel::IndicateVarDataType(ctx, "Input"),
         ctx.device_context());
   }
 };
@@ -86,11 +93,13 @@ class AnchorGeneratorOpMaker : public framework::OpProtoAndCheckerMaker {
         " For instance, the anchor size of 64 means the area of this anchor "
         "equals to 64**2.")
         .AddCustomChecker([](const std::vector<float>& anchor_sizes) {
-          PADDLE_ENFORCE_GT(anchor_sizes.size(), 0,
-                            "Size of anchor_sizes must be at least 1.");
+          PADDLE_ENFORCE_GT(anchor_sizes.size(), 0UL,
+                            platform::errors::InvalidArgument(
+                                "Size of anchor_sizes must be at least 1."));
           for (size_t i = 0; i < anchor_sizes.size(); ++i) {
             PADDLE_ENFORCE_GT(anchor_sizes[i], 0.0,
-                              "anchor_sizes[%d] must be positive.", i);
+                              platform::errors::InvalidArgument(
+                                  "anchor_sizes[%d] must be positive.", i));
           }
         });
     AddAttr<std::vector<float>>(
@@ -104,11 +113,13 @@ class AnchorGeneratorOpMaker : public framework::OpProtoAndCheckerMaker {
                                 "(vector<float>) List of variances to be used "
                                 "in box regression deltas")
         .AddCustomChecker([](const std::vector<float>& variances) {
-          PADDLE_ENFORCE_EQ(variances.size(), 4,
-                            "Must and only provide 4 variance.");
+          PADDLE_ENFORCE_EQ(variances.size(), 4UL,
+                            platform::errors::InvalidArgument(
+                                "Must provide 4 variance only."));
           for (size_t i = 0; i < variances.size(); ++i) {
             PADDLE_ENFORCE_GT(variances[i], 0.0,
-                              "variance[%d] must be greater than 0.", i);
+                              platform::errors::InvalidArgument(
+                                  "variance[%d] must be greater than 0.", i));
           }
         });
 
@@ -118,11 +129,13 @@ class AnchorGeneratorOpMaker : public framework::OpProtoAndCheckerMaker {
         .SetDefault(std::vector<float>(2, 16.0))
         .AddCustomChecker([](const std::vector<float>& stride) {
           PADDLE_ENFORCE_EQ(
-              stride.size(), 2,
-              "Must and only provide 2 stride for width and height.");
+              stride.size(), 2UL,
+              platform::errors::InvalidArgument(
+                  "Must provide 2 stride for width and height only."));
           for (size_t i = 0; i < stride.size(); ++i) {
             PADDLE_ENFORCE_GT(stride[i], 0.0,
-                              "stride[%d] should be larger than 0.", i);
+                              platform::errors::InvalidArgument(
+                                  "stride[%d] should be larger than 0.", i));
           }
         });
 
@@ -146,9 +159,10 @@ https://arxiv.org/abs/1506.01497.
 }  // namespace paddle
 
 namespace ops = paddle::operators;
-REGISTER_OPERATOR(anchor_generator, ops::AnchorGeneratorOp,
-                  ops::AnchorGeneratorOpMaker,
-                  paddle::framework::EmptyGradOpMaker);
+REGISTER_OPERATOR(
+    anchor_generator, ops::AnchorGeneratorOp, ops::AnchorGeneratorOpMaker,
+    paddle::framework::EmptyGradOpMaker<paddle::framework::OpDesc>,
+    paddle::framework::EmptyGradOpMaker<paddle::imperative::OpBase>);
 
 REGISTER_OP_CPU_KERNEL(anchor_generator, ops::AnchorGeneratorOpKernel<float>,
                        ops::AnchorGeneratorOpKernel<double>);

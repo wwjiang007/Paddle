@@ -16,6 +16,9 @@ from __future__ import print_function
 
 import paddle.fluid as fluid
 import unittest
+import paddle
+
+paddle.enable_static()
 
 
 class TestDataFeeder(unittest.TestCase):
@@ -29,6 +32,12 @@ class TestDataFeeder(unittest.TestCase):
         self.assertEqual(result['label'].shape(), [2, 1])
         self.assertEqual(result['image'].recursive_sequence_lengths(), [])
         self.assertEqual(result['label'].recursive_sequence_lengths(), [])
+
+        try:
+            result = feeder.feed([([0] * 783, [9]), ([1] * 783, [1])])
+            self.assertTrue(False)
+        except ValueError:
+            self.assertTrue(True)
 
     def test_lod_level_1_converter(self):
         # lod_level = 1
